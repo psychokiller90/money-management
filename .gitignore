@@ -1,0 +1,14 @@
+# Secrets — JAMAIS sur GitHub
+.env
+*.json.key
+service-account*.json
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
