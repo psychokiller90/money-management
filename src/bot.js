@@ -104,9 +104,11 @@ if (isProd) {
     res.writeHead(404).end('not found');
   });
 
-  server.listen(port, async () => {
-    await bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}${webhookPath}`);
-    console.log(`✅ Bot démarré (webhook) sur :${port}${webhookPath}`);
+  server.listen(port, () => {
+    console.log(`✅ Serveur HTTP démarré sur :${port}`);
+    bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}${webhookPath}`)
+      .then(() => console.log(`✅ Webhook Telegram enregistré → ${process.env.WEBHOOK_URL}${webhookPath}`))
+      .catch((err) => console.error('⚠️ setWebhook échoué (bot toujours actif) :', err.message));
   });
 } else {
   bot.launch();
