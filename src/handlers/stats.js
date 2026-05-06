@@ -70,41 +70,59 @@ function filterRange(expenses, start, end) {
   return expenses.filter((e) => e.date && e.date >= start && e.date < end);
 }
 
+async function withErrorHandling(ctx, fn) {
+  if (!isAuthorized(ctx.from.id)) {
+    return ctx.reply('⛔ Accès non autorisé.');
+  }
+  try {
+    await fn();
+  } catch (err) {
+    console.error('[stats]', err);
+    await ctx.reply(
+      `❌ <b>Erreur lors de la lecture du Sheet</b>\n\n<code>${err.message}</code>\n\nVérifie que :\n• Le Sheet est partagé avec le service account\n• L'API Google Sheets est activée\n• Le SPREADSHEET_ID est correct`,
+      { parse_mode: 'HTML' }
+    );
+  }
+}
+
 export async function handleStats(ctx) {
-  if (!isAuthorized(ctx.from.id)) return;
-  const now = new Date();
-  const { start, end } = rangeMonth(now.getUTCFullYear(), now.getUTCMonth());
-  const all = await listExpenses();
-  const expenses = filterRange(all, start, end);
-  const title = `${MOIS_FR[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
-  await ctx.reply(formatReport(title, expenses), { parse_mode: 'HTML' });
+  await withErrorHandling(ctx, async () => {
+    const now = new Date();
+    const { start, end } = rangeMonth(now.getUTCFullYear(), now.getUTCMonth());
+    const all = await listExpenses();
+    const expenses = filterRange(all, start, end);
+    const title = `${MOIS_FR[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+    await ctx.reply(formatReport(title, expenses), { parse_mode: 'HTML' });
+  });
 }
 
 export async function handleSemaine(ctx) {
-  if (!isAuthorized(ctx.from.id)) return;
-  const end = new Date();
-  const start = new Date(end.getTime() - 7 * 86400 * 1000);
-  const all = await listExpenses();
-  const expenses = filterRange(all, start, end);
-  await ctx.reply(formatReport('7 derniers jours', expenses), { parse_mode: 'HTML' });
+  await withErrorHandling(ctx, async () => {
+    const end = new Date();
+    const start = new Date(end.getTime() - 7 * 86400 * 1000);
+    const all = await listExpenses();
+    const expenses = filterRange(all, start, end);
+    await ctx.reply(formatReport('7 derniers jours', expenses), { parse_mode: 'HTML' });
+  });
 }
 
 export async function handleMois(ctx) {
-  if (!isAuthorized(ctx.from.id)) return;
-  const arg = ctx.message.text.split(' ')[1]; // "/mois 2026-04"
-  let year, month0;
-  if (arg && /^\d{4}-\d{2}$/.test(arg)) {
-    const [y, m] = arg.split('-').map(Number);
-    year = y;
-    month0 = m - 1;
-  } else {
-    const now = new Date();
-    year = now.getUTCFullYear();
-    month0 = now.getUTCMonth();
-  }
-  const { start, end } = rangeMonth(year, month0);
-  const all = await listExpenses();
-  const expenses = filterRange(all, start, end);
-  const title = `${MOIS_FR[month0]} ${year}`;
-  await ctx.reply(formatReport(title, expenses), { parse_mode: 'HTML' });
+  await withErrorHandling(ctx, async () => {
+    const arg = ctx.message.text.split(' ')[1];
+    let year, month0;
+    if (arg && /^\d{4}-\d{2}$/.test(arg)) {
+      const [y, m] = arg.split('-').map(Number);
+      year = y;
+      month0 = m - 1;
+    } else {
+      const now = new Date();
+      year = now.getUTCFullYear();
+      month0 = now.getUTCMonth();
+    }
+    const { start, end } = rangeMonth(year, month0);
+    const all = await listExpenses();
+    const expenses = filterRange(all, start, end);
+    const title = `${MOIS_FR[month0]} ${year}`;
+    await ctx.reply(formatReport(title, expenses), { parse_mode: 'HTML' });
+  });
 }
