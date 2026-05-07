@@ -1,14 +1,17 @@
 import { Markup } from 'telegraf';
-import { analyzeInvoice } from '../mistral.js';
+import { analyzeInvoice, analyzeInvoicePdf } from '../mistral.js';
 import { appendExpense, loadReferences, addEnseigne, findDuplicate } from '../sheets.js';
+import { tryHandleAdminText } from './admin.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
-const sessions = new Map();   // key → { userId, data, awaitingTextFor, updatedAt }
+const sessions = new Map();   // key → { userId, data, awaitingTextFor, updatedAt, fromEdit }
 const userActive = new Map(); // userId → key
 
+let _keyCounter = 0;
 function newKey() {
-  return Date.now().toString(36).slice(-6);
+  _keyCounter = (_keyCounter + 1) % 1000;
+  return (Date.now().toString(36) + _keyCounter.toString(36)).slice(-8);
 }
 
 function setSession(key, session) {
@@ -61,9 +64,18 @@ function formatRecap(data) {
 }
 
 // ─── Handler photo ────────────────────────────────────────────
+const _seenMediaGroups = new Set();
+
 export async function handlePhoto(ctx) {
   const userId = ctx.from.id;
   if (!isAuthorized(userId)) return ctx.reply('⛔ Accès non autorisé.');
+
+  const mediaGroupId = ctx.message.media_group_id;
+  if (mediaGroupId && !_seenMediaGroups.has(mediaGroupId)) {
+    _seenMediaGroups.add(mediaGroupId);
+    setTimeout(() => _seenMediaGroups.delete(mediaGroupId), 60_000);
+    await ctx.reply('📦 Album détecté — chaque photo sera traitée individuellement.');
+  }
 
   const processing = await ctx.reply('⏳ Analyse en cours...');
 
@@ -88,6 +100,45 @@ export async function handlePhoto(ctx) {
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
     console.error('[handlePhoto]', err);
     await ctx.reply(`❌ Erreur analyse : ${err.message}\n\nRéessaie avec une photo plus nette.`);
+  }
+}
+
+// ─── Handler PDF (document) ───────────────────────────────────
+export async function handleDocument(ctx) {
+  const userId = ctx.from.id;
+  if (!isAuthorized(userId)) return ctx.reply('⛔ Accès non autorisé.');
+
+  const doc = ctx.message.document;
+  if (!doc) return;
+  const mime = doc.mime_type || '';
+  const name = doc.file_name || '';
+
+  if (!mime.includes('pdf') && !name.toLowerCase().endsWith('.pdf')) {
+    return ctx.reply('📎 Format non supporté. Envoie une <b>photo</b> ou un <b>PDF</b> de facture.', {
+      parse_mode: 'HTML',
+    });
+  }
+
+  const processing = await ctx.reply('⏳ Analyse du PDF en cours...');
+
+  try {
+    const file = await ctx.telegram.getFile(doc.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    const refs = await loadReferences();
+    const data = await analyzeInvoicePdf(buffer, refs, name || 'facture.pdf');
+
+    const key = newKey();
+    setSession(key, { userId, data, awaitingTextFor: null });
+
+    await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
+    await advance(ctx, key);
+  } catch (err) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
+    console.error('[handleDocument]', err);
+    await ctx.reply(`❌ Erreur analyse PDF : ${err.message}`);
   }
 }
 
@@ -239,12 +290,19 @@ export async function handleCategory(ctx) {
   s.data.categorie_confidence = 'high';
 
   const refs = await loadReferences();
+  const wasFromEdit = s.fromEdit;
   if (s.data.enseigne && !refs.enseignes[cat]?.includes(s.data.enseigne)) {
     s.data.enseigne_in_list = false;
   }
   setSession(key, s);
   await ctx.answerCbQuery(`✓ ${cat}`);
   await ctx.editMessageReplyMarkup(null).catch(() => {});
+  // Si on vient de l'édition et que l'enseigne reste valide → retour direct au confirm
+  if (wasFromEdit && s.data.enseigne && refs.enseignes[cat]?.includes(s.data.enseigne)) {
+    s.fromEdit = false;
+    setSession(key, s);
+    return askConfirm(ctx, key);
+  }
   await advance(ctx, key);
 }
 
@@ -261,9 +319,12 @@ export async function handleEnseigne(ctx) {
   s.data.enseigne = enseigne;
   s.data.enseigne_in_list = true;
   s.data.enseigne_confidence = 'high';
+  const wasFromEdit = s.fromEdit;
+  if (wasFromEdit) s.fromEdit = false;
   setSession(key, s);
   await ctx.answerCbQuery(`✓ ${enseigne}`);
   await ctx.editMessageReplyMarkup(null).catch(() => {});
+  if (wasFromEdit) return askConfirm(ctx, key);
   await advance(ctx, key);
 }
 
@@ -356,15 +417,87 @@ export async function handleEdit(ctx) {
   const s = sessions.get(key);
   if (!s) return ctx.answerCbQuery('Session expirée.');
 
-  s.awaitingTextFor = 'edit';
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+  await showEditMenu(ctx, key);
+}
+
+async function showEditMenu(ctx, key) {
+  const s = sessions.get(key);
+  if (!s) return;
+  await ctx.reply('✏️ <b>Que veux-tu modifier ?</b>', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🏷️ Catégorie', `editfield_${key}_categorie`)],
+      [Markup.button.callback('🏪 Enseigne', `editfield_${key}_enseigne`)],
+      [Markup.button.callback('📝 Désignation', `editfield_${key}_designation`)],
+      [Markup.button.callback('💶 Montant', `editfield_${key}_montant`)],
+      [Markup.button.callback('📅 Date', `editfield_${key}_date`)],
+      [Markup.button.callback('↩️ Retour confirmation', `editfield_${key}_back`)],
+      [Markup.button.callback('❌ Annuler', `cancel_${key}`)],
+    ]),
+  });
+}
+
+export async function handleEditField(ctx) {
+  const key = ctx.match[1];
+  const field = ctx.match[2];
+  const s = sessions.get(key);
+  if (!s) return ctx.answerCbQuery('Session expirée.');
+
+  s.fromEdit = true;
   setSession(key, s);
   await ctx.answerCbQuery();
   await ctx.editMessageReplyMarkup(null).catch(() => {});
-  await ctx.reply(
-    "✏️ Format des corrections (une ligne par champ, seuls ceux à modifier) :\n\n" +
-      '<code>categorie: Courses\nenseigne: Leclerc\ndate: 2026-05-04\nmontant: 42.50\ndesignation: ...</code>',
-    { parse_mode: 'HTML' }
-  );
+
+  const refs = await loadReferences();
+
+  if (field === 'back') {
+    return askConfirm(ctx, key);
+  }
+  if (field === 'categorie') {
+    return askCategory(ctx, key, refs);
+  }
+  if (field === 'enseigne') {
+    return askEnseigne(ctx, key, refs);
+  }
+  if (field === 'designation') {
+    s.awaitingTextFor = 'edit_designation';
+    setSession(key, s);
+    return ctx.reply('✏️ Saisis la nouvelle désignation (ou « . » pour vider) :');
+  }
+  if (field === 'montant') {
+    s.awaitingTextFor = 'edit_montant';
+    setSession(key, s);
+    return ctx.reply('💶 Saisis le nouveau montant en € (ex: <code>42.50</code> ou <code>42,50</code>) :', {
+      parse_mode: 'HTML',
+    });
+  }
+  if (field === 'date') {
+    s.awaitingTextFor = 'edit_date';
+    setSession(key, s);
+    return ctx.reply(
+      '📅 Saisis la nouvelle date au format <code>JJ/MM/AAAA</code> ou <code>AAAA-MM-JJ</code> :',
+      { parse_mode: 'HTML' }
+    );
+  }
+}
+
+function parseFrenchDate(text) {
+  const t = text.trim();
+  // YYYY-MM-DD
+  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  // JJ/MM/AAAA ou JJ-MM-AAAA ou JJ.MM.AAAA
+  m = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m) {
+    const [, d, mo, y] = m;
+    return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  return null;
 }
 
 // ─── Texte libre ──────────────────────────────────────────────
@@ -372,6 +505,9 @@ export async function handleText(ctx) {
   if (ctx.message.text?.startsWith('/')) return;
   const userId = ctx.from.id;
   if (!isAuthorized(userId)) return;
+
+  // Les flows admin (/addenseigne, /renameenseigne) ont priorité
+  if (await tryHandleAdminText(ctx)) return;
 
   const active = getActiveSession(userId);
   if (!active?.session.awaitingTextFor) return;
@@ -386,9 +522,11 @@ export async function handleText(ctx) {
       session.data.enseigne_in_list = true;
       session.data.enseigne_confidence = 'high';
       session.awaitingTextFor = null;
+      const wasFromEdit = session.fromEdit;
+      if (wasFromEdit) session.fromEdit = false;
       setSession(key, session);
       await ctx.reply(`✅ Enseigne « ${text} » ajoutée à la liste.`);
-      return advance(ctx, key);
+      return wasFromEdit ? askConfirm(ctx, key) : advance(ctx, key);
     } catch (err) {
       console.error('[addEnseigne]', err);
       return ctx.reply(`❌ Erreur ajout enseigne : ${err.message}`);
@@ -402,19 +540,39 @@ export async function handleText(ctx) {
     return advance(ctx, key);
   }
 
-  if (session.awaitingTextFor === 'edit') {
-    for (const line of text.split('\n')) {
-      const [field, ...rest] = line.split(':');
-      if (!field) continue;
-      const value = rest.join(':').trim();
-      if (!value) continue;
-      const k = field.trim().toLowerCase();
-      if (k === 'montant') session.data.montant = parseFloat(value);
-      else if (['categorie', 'enseigne', 'date', 'designation'].includes(k)) {
-        session.data[k] = value;
-      }
-    }
+  if (session.awaitingTextFor === 'edit_designation') {
+    session.data.designation = text === '.' ? '' : text;
     session.awaitingTextFor = null;
+    session.fromEdit = false;
+    setSession(key, session);
+    return askConfirm(ctx, key);
+  }
+
+  if (session.awaitingTextFor === 'edit_montant') {
+    const n = parseFloat(text.replace(',', '.'));
+    if (!Number.isFinite(n) || n < 0) {
+      return ctx.reply('❌ Montant invalide. Réessaie (ex: <code>42.50</code>) :', {
+        parse_mode: 'HTML',
+      });
+    }
+    session.data.montant = Math.round(n * 100) / 100;
+    session.awaitingTextFor = null;
+    session.fromEdit = false;
+    setSession(key, session);
+    return askConfirm(ctx, key);
+  }
+
+  if (session.awaitingTextFor === 'edit_date') {
+    const iso = parseFrenchDate(text);
+    if (!iso) {
+      return ctx.reply(
+        '❌ Date invalide. Format attendu : <code>JJ/MM/AAAA</code> ou <code>AAAA-MM-JJ</code>.',
+        { parse_mode: 'HTML' }
+      );
+    }
+    session.data.date = iso;
+    session.awaitingTextFor = null;
+    session.fromEdit = false;
     setSession(key, session);
     return askConfirm(ctx, key);
   }

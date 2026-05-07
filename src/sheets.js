@@ -170,3 +170,66 @@ function serialToDate(serial) {
   if (typeof serial !== 'number') return null;
   return new Date((serial - 25569) * 86400 * 1000);
 }
+
+/**
+ * Réécrit la colonne `data` d'une catégorie avec la liste fournie
+ * (header inchangé en ligne 1, enseignes en lignes 2..N+1, le reste vidé).
+ * @param {string} categorie
+ * @param {string[]} list
+ */
+async function rewriteEnseigneColumn(categorie, list) {
+  const col = CAT_TO_DATA_COL[categorie];
+  if (!col) throw new Error(`Catégorie inconnue : ${categorie}`);
+
+  const sheets = getSheetsClient();
+  // 1) Vide la colonne (lignes 2 à 50) pour repartir propre
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: spreadsheetId(),
+    range: `${DATA_SHEET}!${col}2:${col}50`,
+  });
+  // 2) Réécrit la liste contiguë
+  if (list.length > 0) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: spreadsheetId(),
+      range: `${DATA_SHEET}!${col}2:${col}${1 + list.length}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: list.map((v) => [v]) },
+    });
+  }
+  _refsCache = null;
+}
+
+/**
+ * Supprime une enseigne de la liste data (compaction de la colonne).
+ */
+export async function delEnseigne(categorie, enseigne) {
+  const refs = await loadReferences(true);
+  const current = refs.enseignes[categorie] || [];
+  const target = enseigne.toLowerCase().trim();
+  const next = current.filter((e) => e.toLowerCase().trim() !== target);
+  if (next.length === current.length) {
+    throw new Error(`Enseigne « ${enseigne} » introuvable pour ${categorie}.`);
+  }
+  await rewriteEnseigneColumn(categorie, next);
+}
+
+/**
+ * Renomme une enseigne dans la liste data (l'ordre est préservé).
+ */
+export async function renameEnseigne(categorie, oldName, newName) {
+  const refs = await loadReferences(true);
+  const current = refs.enseignes[categorie] || [];
+  const target = oldName.toLowerCase().trim();
+  let found = false;
+  const next = current.map((e) => {
+    if (e.toLowerCase().trim() === target) {
+      found = true;
+      return newName;
+    }
+    return e;
+  });
+  if (!found) {
+    throw new Error(`Enseigne « ${oldName} » introuvable pour ${categorie}.`);
+  }
+  await rewriteEnseigneColumn(categorie, next);
+}

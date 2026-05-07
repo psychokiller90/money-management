@@ -79,3 +79,52 @@ function parseJSON(raw) {
     throw new Error(`Réponse IA non parseable : ${raw}`);
   }
 }
+
+/**
+ * Analyse un PDF de facture via Mistral OCR + chat completion.
+ * 1. Upload du PDF dans Mistral Files API (purpose: ocr)
+ * 2. Récupération d'une URL signée
+ * 3. OCR pour extraire le texte
+ * 4. Chat completion text-only avec le même prompt système
+ */
+export async function analyzeInvoicePdf(pdfBuffer, refs, fileName = 'facture.pdf') {
+  // 1) Upload
+  const uploaded = await client.files.upload({
+    file: { fileName, content: pdfBuffer },
+    purpose: 'ocr',
+  });
+
+  // 2) Signed URL
+  const signed = await client.files.getSignedUrl({ fileId: uploaded.id });
+
+  // 3) OCR
+  const ocr = await client.ocr.process({
+    model: 'mistral-ocr-latest',
+    document: { type: 'document_url', documentUrl: signed.url },
+  });
+
+  const ocrText = (ocr.pages || [])
+    .map((p) => p.markdown || p.text || '')
+    .join('\n\n')
+    .trim();
+
+  if (!ocrText) {
+    throw new Error('OCR a retourné un contenu vide.');
+  }
+
+  // 4) Chat completion text-only
+  const response = await client.chat.complete({
+    model: 'mistral-small-latest',
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `${buildUserPrompt(refs)}\n\nContenu OCR de la facture :\n---\n${ocrText}\n---`,
+      },
+    ],
+    maxTokens: 400,
+    responseFormat: { type: 'json_object' },
+  });
+
+  return parseJSON(response.choices[0].message.content);
+}

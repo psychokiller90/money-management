@@ -3,6 +3,7 @@ import http from 'node:http';
 import { Telegraf } from 'telegraf';
 import {
   handlePhoto,
+  handleDocument,
   handleCategory,
   handleEnseigne,
   handleEnseigneNew,
@@ -12,9 +13,20 @@ import {
   handleConfirm,
   handleCancel,
   handleEdit,
+  handleEditField,
   handleText,
 } from './handlers/photo.js';
 import { handleStats, handleSemaine, handleMois } from './handlers/stats.js';
+import {
+  handleCategories,
+  handleAddEnseigne,
+  handleDelEnseigne,
+  handleRenameEnseigne,
+  handleAdminCat,
+  handleAdminEns,
+  handleAdminDelConfirm,
+  handleAdminCancel,
+} from './handlers/admin.js';
 import { checkAndRemind } from './handlers/reminder.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -33,13 +45,20 @@ bot.start((ctx) =>
 bot.help((ctx) =>
   ctx.reply(
     '📖 <b>Utilisation</b>\n\n' +
-      '• Envoie une <b>photo</b> de facture → analyse IA → insertion Sheets\n' +
+      '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture → analyse IA → insertion Sheets\n' +
+      '• Album de photos = traitement individuel de chaque facture\n' +
       "• L'IA propose la catégorie et l'enseigne ; en cas de doute tu choisis\n" +
-      '• Détection auto des doublons (même date, montant, enseigne ±2j)\n\n' +
-      '<b>Commandes :</b>\n' +
+      '• Détection auto des doublons (même date, montant, enseigne ±2j)\n' +
+      '• Avant insertion : ✏️ Modifier permet de corriger chaque champ\n\n' +
+      '<b>Statistiques :</b>\n' +
       '• /stats — résumé du mois en cours\n' +
       '• /semaine — 7 derniers jours\n' +
       '• /mois [YYYY-MM] — résumé d\'un mois précis\n\n' +
+      '<b>Gestion des listes :</b>\n' +
+      '• /categories — affiche catégories & enseignes\n' +
+      '• /addenseigne — ajoute une enseigne\n' +
+      '• /delenseigne — supprime une enseigne\n' +
+      '• /renameenseigne — renomme une enseigne\n\n' +
       '<b>Colonnes Sheet :</b> Catégorie | Date | Type/Enseigne | Désignation | Montant',
     { parse_mode: 'HTML' }
   )
@@ -49,8 +68,15 @@ bot.command('stats', handleStats);
 bot.command('semaine', handleSemaine);
 bot.command('mois', handleMois);
 
-// ── Handlers photo + callbacks ──────────────────────────────
+// ── Admin (P4) ──────────────────────────────────────────────
+bot.command('categories', handleCategories);
+bot.command('addenseigne', handleAddEnseigne);
+bot.command('delenseigne', handleDelEnseigne);
+bot.command('renameenseigne', handleRenameEnseigne);
+
+// ── Handlers photo + PDF + callbacks ────────────────────────
 bot.on('photo', handlePhoto);
+bot.on('document', handleDocument);
 
 bot.action(/^cat_([a-z0-9]+)_(.+)$/, handleCategory);
 bot.action(/^ensnew_([a-z0-9]+)$/, handleEnseigneNew);
@@ -61,6 +87,13 @@ bot.action(/^force_([a-z0-9]+)$/, handleForceDuplicate);
 bot.action(/^confirm_([a-z0-9]+)$/, handleConfirm);
 bot.action(/^cancel_([a-z0-9]+)$/, handleCancel);
 bot.action(/^edit_([a-z0-9]+)$/, handleEdit);
+bot.action(/^editfield_([a-z0-9]+)_([a-z]+)$/, handleEditField);
+
+// Admin callbacks
+bot.action(/^admincat_(add|del|rename)_(.+)$/, handleAdminCat);
+bot.action(/^adminens_(del|rename)_(\d+)$/, handleAdminEns);
+bot.action(/^admindelconfirm$/, handleAdminDelConfirm);
+bot.action(/^admincancel$/, handleAdminCancel);
 
 bot.on('text', handleText);
 
