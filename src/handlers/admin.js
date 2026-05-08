@@ -4,6 +4,9 @@ import {
   addEnseigne,
   delEnseigne,
   renameEnseigne,
+  addCategorie,
+  delCategorie,
+  renameCategorie,
 } from '../sheets.js';
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
@@ -207,6 +210,110 @@ export async function handleAdminCancel(ctx) {
   await ctx.reply('🚫 Annulé.');
 }
 
+// ─── /addcategorie ───────────────────────────────────────────
+export async function handleAddCategorie(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  setAdmin(ctx.from.id, { mode: 'addcat', step: 'cat_input' });
+  await ctx.reply('✏️ Saisis le nom de la nouvelle catégorie :');
+}
+
+// ─── /delcategorie ───────────────────────────────────────────
+export async function handleDelCategorie(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  const refs = await loadReferences(true);
+  if (refs.categories.length === 0) {
+    return ctx.reply('ℹ️ Aucune catégorie à supprimer.');
+  }
+  setAdmin(ctx.from.id, { mode: 'delcat', step: 'pick_cat' });
+  const buttons = refs.categories.map((c) =>
+    Markup.button.callback(c, `admincatpick_del_${c}`)
+  );
+  const rows = chunkRows(buttons, 2);
+  rows.push([Markup.button.callback('❌ Annuler', `admincancel`)]);
+  await ctx.reply('🗑️ <b>Quelle catégorie supprimer ?</b>', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(rows),
+  });
+}
+
+// ─── /renamecategorie ────────────────────────────────────────
+export async function handleRenameCategorie(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  const refs = await loadReferences(true);
+  if (refs.categories.length === 0) {
+    return ctx.reply('ℹ️ Aucune catégorie à renommer.');
+  }
+  setAdmin(ctx.from.id, { mode: 'renamecat', step: 'pick_cat' });
+  const buttons = refs.categories.map((c) =>
+    Markup.button.callback(c, `admincatpick_rename_${c}`)
+  );
+  const rows = chunkRows(buttons, 2);
+  rows.push([Markup.button.callback('❌ Annuler', `admincancel`)]);
+  await ctx.reply('✏️ <b>Quelle catégorie renommer ?</b>', {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(rows),
+  });
+}
+
+// ─── Callback : choix catégorie pour del/rename ──────────────
+export async function handleAdminCatPick(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.answerCbQuery('⛔');
+  const mode = ctx.match[1];
+  const cat = ctx.match[2];
+  const sess = getAdmin(ctx.from.id);
+  if (!sess) return ctx.answerCbQuery('Session expirée.');
+
+  await ctx.answerCbQuery(`✓ ${cat}`);
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+
+  if (mode === 'del') {
+    const refs = await loadReferences();
+    const count = (refs.enseignes[cat] || []).length;
+    setAdmin(ctx.from.id, { ...sess, step: 'confirm_del_cat', categorie: cat });
+    return ctx.reply(
+      `⚠️ Confirmer la suppression de la catégorie <b>${cat}</b>` +
+        (count > 0 ? ` et ses ${count} enseigne${count > 1 ? 's' : ''}` : '') +
+        ' ?\n\n<i>Les dépenses déjà saisies ne sont pas modifiées.</i>',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🗑️ Supprimer', `admindelcatconfirm`)],
+          [Markup.button.callback('❌ Annuler', `admincancel`)],
+        ]),
+      }
+    );
+  }
+
+  // rename
+  setAdmin(ctx.from.id, { ...sess, step: 'rename_cat_input', categorie: cat });
+  return ctx.reply(`✏️ Saisis le nouveau nom pour <b>${cat}</b> :`, {
+    parse_mode: 'HTML',
+  });
+}
+
+// ─── Callback : confirme suppression catégorie ───────────────
+export async function handleAdminDelCatConfirm(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.answerCbQuery('⛔');
+  const sess = getAdmin(ctx.from.id);
+  if (!sess || sess.step !== 'confirm_del_cat') {
+    return ctx.answerCbQuery('Session expirée.');
+  }
+  await ctx.answerCbQuery('Suppression...');
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+  try {
+    await delCategorie(sess.categorie);
+    clearAdmin(ctx.from.id);
+    await ctx.reply(
+      `✅ Catégorie <b>${sess.categorie}</b> supprimée.\n\n` +
+        '⚠️ Pense à mettre à jour les <b>plages nommées</b> et la <b>validation INDIRECT()</b> dans le Sheet si nécessaire.',
+      { parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    console.error('[delCategorie]', err);
+    await ctx.reply(`❌ Erreur : ${err.message}`);
+  }
+}
+
 // ─── Texte libre (saisie nouvelle enseigne / nouveau nom) ─────
 // Renvoie true si le texte a été consommé par un flow admin.
 export async function tryHandleAdminText(ctx) {
@@ -241,6 +348,38 @@ export async function tryHandleAdminText(ctx) {
       );
     } catch (err) {
       console.error('[renameEnseigne]', err);
+      await ctx.reply(`❌ Erreur : ${err.message}`);
+    }
+    return true;
+  }
+
+  if (sess.step === 'cat_input') {
+    try {
+      const { name } = await addCategorie(text);
+      clearAdmin(ctx.from.id);
+      await ctx.reply(
+        `✅ Catégorie <b>${name}</b> ajoutée.\n\n` +
+          '⚠️ Pense à créer la <b>plage nommée</b> correspondante et à étendre la <b>validation INDIRECT()</b> dans le Sheet.',
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[addCategorie]', err);
+      await ctx.reply(`❌ Erreur : ${err.message}`);
+    }
+    return true;
+  }
+
+  if (sess.step === 'rename_cat_input') {
+    try {
+      await renameCategorie(sess.categorie, text);
+      clearAdmin(ctx.from.id);
+      await ctx.reply(
+        `✅ <b>${sess.categorie}</b> → <b>${text}</b>.\n\n` +
+          '⚠️ Anciennes dépenses non migrées. Pense à mettre à jour la <b>plage nommée</b> et la validation INDIRECT() côté Sheet.',
+        { parse_mode: 'HTML' }
+      );
+    } catch (err) {
+      console.error('[renameCategorie]', err);
       await ctx.reply(`❌ Erreur : ${err.message}`);
     }
     return true;

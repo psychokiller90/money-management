@@ -3,14 +3,13 @@ import { google } from 'googleapis';
 const DATA_SHEET = 'data';
 const DEPENSES_SHEET = 'Dépenses';
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const DATA_MAX_COL = 'Z'; // jusqu'à 26 catégories possibles
 
-const CAT_TO_DATA_COL = {
-  Courses: 'A',
-  Imprevus: 'B',
-  Factures: 'C',
-  Abonnements: 'D',
-  Jumeaux: 'E',
-};
+function columnLetter(idx) {
+  // 0 → A, 1 → B, ..., 25 → Z, 26 → AA (non supporté ici)
+  if (idx < 0 || idx > 25) throw new Error(`Index colonne hors limite : ${idx}`);
+  return String.fromCharCode(65 + idx);
+}
 
 let _sheets = null;
 let _refsCache = null;
@@ -42,21 +41,34 @@ export async function loadReferences(force = false) {
   const sheets = getSheetsClient();
   const { data } = await sheets.spreadsheets.values.get({
     spreadsheetId: spreadsheetId(),
-    range: `${DATA_SHEET}!A1:E50`,
+    range: `${DATA_SHEET}!A1:${DATA_MAX_COL}50`,
     majorDimension: 'COLUMNS',
   });
 
   const categories = [];
   const enseignes = {};
-  for (const col of data.values || []) {
-    if (!col?.length) continue;
+  const catToCol = {};
+  (data.values || []).forEach((col, idx) => {
+    if (!col?.length) return;
     const cat = col[0];
-    if (!cat) continue;
+    if (!cat) return;
     categories.push(cat);
     enseignes[cat] = col.slice(1).filter((v) => v && String(v).trim());
-  }
-  _refsCache = { fetchedAt: Date.now(), categories, enseignes };
+    catToCol[cat] = columnLetter(idx);
+  });
+  _refsCache = { fetchedAt: Date.now(), categories, enseignes, catToCol };
   return _refsCache;
+}
+
+/**
+ * Trouve la lettre de colonne pour une catégorie donnée (ex: "Courses" → "A").
+ * Lance une erreur si la catégorie n'existe pas.
+ */
+async function findCategoryColumn(categorie) {
+  const refs = await loadReferences();
+  const col = refs.catToCol[categorie];
+  if (!col) throw new Error(`Catégorie inconnue : ${categorie}`);
+  return col;
 }
 
 /**
@@ -66,7 +78,7 @@ export async function loadReferences(force = false) {
 export async function appendExpense(d) {
   const sheets = getSheetsClient();
   const [year, month, day] = d.date.split('-').map(Number);
-  const dateFormula = `=DATE(${year},${month},${day})`;
+  const dateFormula = `=DATE(${year};${month};${day})`;
 
   const row = [
     d.categorie,
@@ -92,8 +104,7 @@ export async function appendExpense(d) {
  * pour qu'elle apparaisse dans les listes Sheets futures. Invalide le cache.
  */
 export async function addEnseigne(categorie, enseigne) {
-  const col = CAT_TO_DATA_COL[categorie];
-  if (!col) throw new Error(`Catégorie inconnue : ${categorie}`);
+  const col = await findCategoryColumn(categorie);
 
   const sheets = getSheetsClient();
   const { data } = await sheets.spreadsheets.values.get({
@@ -178,8 +189,7 @@ function serialToDate(serial) {
  * @param {string[]} list
  */
 async function rewriteEnseigneColumn(categorie, list) {
-  const col = CAT_TO_DATA_COL[categorie];
-  if (!col) throw new Error(`Catégorie inconnue : ${categorie}`);
+  const col = await findCategoryColumn(categorie);
 
   const sheets = getSheetsClient();
   // 1) Vide la colonne (lignes 2 à 50) pour repartir propre
@@ -211,6 +221,96 @@ export async function delEnseigne(categorie, enseigne) {
     throw new Error(`Enseigne « ${enseigne} » introuvable pour ${categorie}.`);
   }
   await rewriteEnseigneColumn(categorie, next);
+}
+
+/**
+ * Ajoute une nouvelle catégorie dans `data` : trouve la première colonne libre
+ * (header vide) parmi A:Z et y inscrit le nom. Refuse les doublons.
+ */
+export async function addCategorie(name) {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('Nom de catégorie vide.');
+
+  const refs = await loadReferences(true);
+  if (refs.categories.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
+    throw new Error(`La catégorie « ${trimmed} » existe déjà.`);
+  }
+
+  const sheets = getSheetsClient();
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId: spreadsheetId(),
+    range: `${DATA_SHEET}!A1:${DATA_MAX_COL}1`,
+  });
+  const headers = data.values?.[0] || [];
+  // Trouve le premier index où le header est vide
+  let freeIdx = -1;
+  for (let i = 0; i <= 25; i++) {
+    if (!headers[i] || !String(headers[i]).trim()) {
+      freeIdx = i;
+      break;
+    }
+  }
+  if (freeIdx < 0) {
+    throw new Error('Plus de colonne libre dans `data` (max 26).');
+  }
+  const col = columnLetter(freeIdx);
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: spreadsheetId(),
+    range: `${DATA_SHEET}!${col}1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[trimmed]] },
+  });
+  _refsCache = null;
+  return { col, name: trimmed };
+}
+
+/**
+ * Supprime une catégorie : vide entièrement la colonne dans `data`
+ * (header + enseignes). Les dépenses déjà saisies ne sont pas modifiées.
+ */
+export async function delCategorie(name) {
+  const refs = await loadReferences(true);
+  const cat = refs.categories.find((c) => c === name);
+  if (!cat) throw new Error(`Catégorie introuvable : ${name}`);
+  const col = refs.catToCol[cat];
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: spreadsheetId(),
+    range: `${DATA_SHEET}!${col}1:${col}50`,
+  });
+  _refsCache = null;
+}
+
+/**
+ * Renomme une catégorie : met à jour le header de la colonne dans `data`.
+ * Les anciennes lignes de l'onglet Dépenses ne sont PAS migrées (gardent l'ancien
+ * nom). La validation INDIRECT() côté Sheet peut nécessiter une mise à jour
+ * manuelle (named ranges).
+ */
+export async function renameCategorie(oldName, newName) {
+  const trimmed = newName.trim();
+  if (!trimmed) throw new Error('Nouveau nom vide.');
+
+  const refs = await loadReferences(true);
+  if (!refs.categories.includes(oldName)) {
+    throw new Error(`Catégorie introuvable : ${oldName}`);
+  }
+  if (
+    refs.categories.some(
+      (c) => c.toLowerCase() === trimmed.toLowerCase() && c !== oldName
+    )
+  ) {
+    throw new Error(`La catégorie « ${trimmed} » existe déjà.`);
+  }
+  const col = refs.catToCol[oldName];
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: spreadsheetId(),
+    range: `${DATA_SHEET}!${col}1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[trimmed]] },
+  });
+  _refsCache = null;
 }
 
 /**

@@ -22,9 +22,14 @@ import {
   handleAddEnseigne,
   handleDelEnseigne,
   handleRenameEnseigne,
+  handleAddCategorie,
+  handleDelCategorie,
+  handleRenameCategorie,
   handleAdminCat,
   handleAdminEns,
   handleAdminDelConfirm,
+  handleAdminCatPick,
+  handleAdminDelCatConfirm,
   handleAdminCancel,
 } from './handlers/admin.js';
 import { checkAndRemind } from './handlers/reminder.js';
@@ -56,9 +61,8 @@ bot.help((ctx) =>
       '• /mois [YYYY-MM] — résumé d\'un mois précis\n\n' +
       '<b>Gestion des listes :</b>\n' +
       '• /categories — affiche catégories & enseignes\n' +
-      '• /addenseigne — ajoute une enseigne\n' +
-      '• /delenseigne — supprime une enseigne\n' +
-      '• /renameenseigne — renomme une enseigne\n\n' +
+      '• /addcategorie /delcategorie /renamecategorie\n' +
+      '• /addenseigne /delenseigne /renameenseigne\n\n' +
       '<b>Colonnes Sheet :</b> Catégorie | Date | Type/Enseigne | Désignation | Montant',
     { parse_mode: 'HTML' }
   )
@@ -73,6 +77,9 @@ bot.command('categories', handleCategories);
 bot.command('addenseigne', handleAddEnseigne);
 bot.command('delenseigne', handleDelEnseigne);
 bot.command('renameenseigne', handleRenameEnseigne);
+bot.command('addcategorie', handleAddCategorie);
+bot.command('delcategorie', handleDelCategorie);
+bot.command('renamecategorie', handleRenameCategorie);
 
 // ── Handlers photo + PDF + callbacks ────────────────────────
 bot.on('photo', handlePhoto);
@@ -93,6 +100,8 @@ bot.action(/^editfield_([a-z0-9]+)_([a-z]+)$/, handleEditField);
 bot.action(/^admincat_(add|del|rename)_(.+)$/, handleAdminCat);
 bot.action(/^adminens_(del|rename)_(\d+)$/, handleAdminEns);
 bot.action(/^admindelconfirm$/, handleAdminDelConfirm);
+bot.action(/^admincatpick_(del|rename)_(.+)$/, handleAdminCatPick);
+bot.action(/^admindelcatconfirm$/, handleAdminDelCatConfirm);
 bot.action(/^admincancel$/, handleAdminCancel);
 
 bot.on('text', handleText);
