@@ -182,6 +182,67 @@ function serialToDate(serial) {
   return new Date((serial - 25569) * 86400 * 1000);
 }
 
+// ─── Vue globale ─────────────────────────────────────────────
+const GLOBAL_SHEET = 'Vue globale';
+const GLOBAL_LABELS = {
+  imprevus: ['imprevus', 'imprevu'],
+  totalDepenses: ['totaldepenses', 'totaldepense'],
+  objectifEpargne: ['objectifepargne', 'objectifepargnes'],
+  soldeRestant: ['solderestant'],
+};
+
+function normalizeLabel(s) {
+  return String(s || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '') // accents
+    .replace(/[^a-z0-9]/g, ''); // emojis, espaces, ponctuation
+}
+
+function valueNear(grid, row, col) {
+  const right = grid[row]?.[col + 1];
+  if (right !== undefined && String(right).trim() !== '') return String(right);
+  const below = grid[row + 1]?.[col];
+  if (below !== undefined && String(below).trim() !== '') return String(below);
+  return null;
+}
+
+/**
+ * Lit la feuille "Vue globale" et renvoie les 4 indicateurs clés
+ * en cherchant les labels par scan (insensible à la casse / accents / emojis).
+ * Retourne les valeurs formatées par le Sheet (ex: "1 234,56 €").
+ */
+export async function loadGlobalView() {
+  const sheets = getSheetsClient();
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId: spreadsheetId(),
+    range: `'${GLOBAL_SHEET}'!A1:Z80`,
+    valueRenderOption: 'FORMATTED_VALUE',
+  });
+  const grid = data.values || [];
+  const result = {
+    imprevus: null,
+    totalDepenses: null,
+    objectifEpargne: null,
+    soldeRestant: null,
+  };
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const norm = normalizeLabel(row[c]);
+      if (!norm) continue;
+      for (const [key, alts] of Object.entries(GLOBAL_LABELS)) {
+        if (result[key] !== null) continue;
+        if (alts.some((a) => norm === a)) {
+          const v = valueNear(grid, r, c);
+          if (v !== null) result[key] = v;
+        }
+      }
+    }
+  }
+  return result;
+}
+
 /**
  * Réécrit la colonne `data` d'une catégorie avec la liste fournie
  * (header inchangé en ligne 1, enseignes en lignes 2..N+1, le reste vidé).

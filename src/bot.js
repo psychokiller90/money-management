@@ -56,9 +56,9 @@ bot.help((ctx) =>
       '• Détection auto des doublons (même date, montant, enseigne ±2j)\n' +
       '• Avant insertion : ✏️ Modifier permet de corriger chaque champ\n\n' +
       '<b>Statistiques :</b>\n' +
-      '• /stats — résumé du mois en cours\n' +
+      '• /stats — vue globale (imprévus, total, objectif, solde)\n' +
       '• /semaine — 7 derniers jours\n' +
-      '• /mois [YYYY-MM] — résumé d\'un mois précis\n\n' +
+      '• /mois [YYYY-MM] — résumé détaillé du mois\n\n' +
       '<b>Gestion des listes :</b>\n' +
       '• /categories — affiche catégories & enseignes\n' +
       '• /addcategorie /delcategorie /renamecategorie\n' +

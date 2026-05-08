@@ -1,4 +1,4 @@
-import { listExpenses } from '../sheets.js';
+import { listExpenses, loadGlobalView } from '../sheets.js';
 
 const CAT_EMOJI = {
   Courses: '🛒',
@@ -87,12 +87,18 @@ async function withErrorHandling(ctx, fn) {
 
 export async function handleStats(ctx) {
   await withErrorHandling(ctx, async () => {
-    const now = new Date();
-    const { start, end } = rangeMonth(now.getUTCFullYear(), now.getUTCMonth());
-    const all = await listExpenses();
-    const expenses = filterRange(all, start, end);
-    const title = `${MOIS_FR[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
-    await ctx.reply(formatReport(title, expenses), { parse_mode: 'HTML' });
+    const v = await loadGlobalView();
+    const fmt = (x) => (x !== null && x !== undefined && String(x).trim() !== '' ? x : '—');
+    const lines = [
+      '📊 <b>Vue globale</b>\n',
+      `⚡ Imprévus           : <b>${fmt(v.imprevus)}</b>`,
+      `📊 Total dépenses     : <b>${fmt(v.totalDepenses)}</b>`,
+      `🎯 Objectif épargne   : <b>${fmt(v.objectifEpargne)}</b>`,
+      `💳 Solde restant      : <b>${fmt(v.soldeRestant)}</b>`,
+      '',
+      '<i>Pour le détail mensuel : /mois</i>',
+    ];
+    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
 }
 
