@@ -6,6 +6,7 @@ import {
   loadReferences,
   addEnseigne,
   findDuplicate,
+  listExpenses,
 } from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
 
@@ -232,13 +233,30 @@ export async function handleBatchAll(ctx) {
   await ctx.answerCbQuery('Insertion en cours...');
   await ctx.editMessageReplyMarkup(null).catch(() => {});
 
+  // Préchargement du cache dépenses pour que findDuplicate soit rapide
+  await listExpenses(true);
+
   const all = [s.data, ...(s.pendingQueue || [])];
   let ok = 0;
+  const skippedDups = [];
   const errors = [];
+
   for (const t of all) {
     try {
       if (!t.date || !t.montant || !t.enseigne || !t.categorie) {
         errors.push(`${t.enseigne || '?'} — données incomplètes`);
+        continue;
+      }
+      // Détection doublon
+      const dup = await findDuplicate({
+        date: t.date,
+        montant: t.montant,
+        enseigne: t.enseigne,
+      });
+      if (dup) {
+        skippedDups.push(
+          `${t.enseigne} — ${t.montant} € (ligne ${dup.rowIndex}, ${fmtDateShort(dup.date)})`
+        );
         continue;
       }
       await appendExpense({
@@ -256,6 +274,11 @@ export async function handleBatchAll(ctx) {
   clearSession(key);
 
   const lines = [`✅ <b>${ok}/${all.length} transactions insérées</b>`];
+  if (skippedDups.length > 0) {
+    lines.push('');
+    lines.push(`🔁 <b>${skippedDups.length} doublon(s) ignoré(s) :</b>`);
+    skippedDups.forEach((d) => lines.push(`• ${d}`));
+  }
   if (errors.length > 0) {
     lines.push('');
     lines.push('⚠️ Erreurs :');
