@@ -47,7 +47,7 @@ Retourne EXACTEMENT ce JSON :
 
 function buildMultiPrompt(refs) {
   const { catList, enseignesPerCat } = buildCatBlock(refs);
-  return `Analyse ce document financier (relevé bancaire, extrait de compte, ou facture) et extrais TOUTES les transactions de débit (dépenses).
+  return `Analyse ce document financier (relevé bancaire, extrait de compte, ou facture) et extrais TOUTES les lignes de débit.
 
 Catégories disponibles :
 ${catList}
@@ -56,19 +56,24 @@ Enseignes connues par catégorie :
 ${enseignesPerCat}
 
 Règles :
-- Ignore les crédits, virements entrants, soldes, reports et en-têtes.
+- Ignore les crédits, remboursements, soldes, reports et en-têtes.
 - Pour chaque débit : extrais date, montant (positif), enseigne/libellé, catégorie.
 - Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
-- "designation" : résume le libellé en 3-8 mots, ou null si le libellé IS déjà l'enseigne.
+- "designation" : résume le libellé en 3-8 mots, ou null si le libellé est déjà l'enseigne.
 - S'il n'y a qu'une seule transaction (facture simple) → tableau à 1 élément.
+- Champ "transaction_type" :
+  * "retrait" si c'est un retrait d'espèces / DAB / ATM
+  * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)
+  * "debit" pour tout autre achat/dépense
 
-Retourne EXACTEMENT ce JSON (tableau, même pour 1 élément) :
+Retourne EXACTEMENT ce JSON :
 {
   "is_statement": true,
   "transactions": [
     {
       "date": "YYYY-MM-DD",
       "montant": 0.00,
+      "transaction_type": "debit",
       "categorie": "Courses",
       "categorie_confidence": "high",
       "enseigne": "Leclerc",

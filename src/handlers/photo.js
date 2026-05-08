@@ -151,13 +151,127 @@ export async function handleDocument(ctx) {
       return advance(ctx, key);
     }
 
-    // Relevé multi-transactions → afficher le résumé
-    return showBatchSummary(ctx, userId, transactions, refs);
+    // Relevé multi-transactions → questions retraits/virements puis résumé
+    return askSpecialTransactions(ctx, userId, transactions, refs);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
     console.error('[handleDocument]', err);
     await ctx.reply(`❌ Erreur analyse PDF : ${err.message}`);
   }
+}
+
+// ─── Questions pré-batch (retraits / virements) ───────────────
+
+function sumType(transactions, type) {
+  return transactions
+    .filter((t) => t.transaction_type === type)
+    .reduce((s, t) => s + Number(t.montant || 0), 0);
+}
+
+/**
+ * Avant le résumé principal, demande si on inclut retraits et/ou virements.
+ * Stocke tout dans la session et enchaîne les questions.
+ */
+async function askSpecialTransactions(ctx, userId, transactions, refs) {
+  const retraits = transactions.filter((t) => t.transaction_type === 'retrait');
+  const virements = transactions.filter((t) => t.transaction_type === 'virement');
+
+  // Stocker l'état dans une session batch temporaire
+  const batchKey = newKey();
+  setSession(batchKey, {
+    userId,
+    data: null, // sera rempli après filtrage
+    awaitingTextFor: null,
+    _batchPending: transactions,  // toutes les transactions
+    _batchRefs: refs,
+    _includeRetraits: null,       // null = pas encore décidé
+    _includeVirements: null,
+  });
+
+  if (retraits.length > 0) {
+    return askIncludeType(ctx, batchKey, 'retrait', retraits.length, sumType(transactions, 'retrait'));
+  }
+  if (virements.length > 0) {
+    return askIncludeType(ctx, batchKey, 'virement', virements.length, sumType(transactions, 'virement'));
+  }
+  // Pas de cas spéciaux → résumé direct
+  return showBatchSummary(ctx, userId, transactions, refs);
+}
+
+async function askIncludeType(ctx, batchKey, type, count, total) {
+  const label = type === 'retrait' ? 'retrait(s) d\'espèces' : 'virement(s)';
+  const emoji = type === 'retrait' ? '💵' : '🔁';
+  await ctx.reply(
+    `${emoji} <b>${count} ${label} détecté(s)</b> — ${fmtAmountShort(total)}\n\nLes inclure dans l'insertion ?`,
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Oui, inclure', `batchincl_${batchKey}_${type}_yes`),
+          Markup.button.callback('❌ Non, ignorer', `batchincl_${batchKey}_${type}_no`),
+        ],
+      ]),
+    }
+  );
+}
+
+export async function handleBatchInclude(ctx) {
+  const key = ctx.match[1];
+  const type = ctx.match[2];       // 'retrait' ou 'virement'
+  const choice = ctx.match[3];     // 'yes' ou 'no'
+  const s = sessions.get(key);
+  if (!s) return ctx.answerCbQuery('Session expirée.');
+
+  await ctx.answerCbQuery(choice === 'yes' ? 'Inclus ✅' : 'Ignorés ❌');
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+
+  if (type === 'retrait') s._includeRetraits = choice === 'yes';
+  if (type === 'virement') s._includeVirements = choice === 'yes';
+  setSession(key, s);
+
+  const transactions = s._batchPending;
+  const refs = s._batchRefs;
+
+  // Question suivante si nécessaire
+  if (type === 'retrait' && s._includeVirements === null) {
+    const virements = transactions.filter((t) => t.transaction_type === 'virement');
+    if (virements.length > 0) {
+      return askIncludeType(ctx, key, 'virement', virements.length, sumType(transactions, 'virement'));
+    }
+    s._includeVirements = true; // pas de virements → sans objet
+    setSession(key, s);
+  }
+
+  // Toutes les questions répondues → filtrer et afficher le résumé
+  const filtered = transactions.filter((t) => {
+    if (t.transaction_type === 'retrait') return s._includeRetraits !== false;
+    if (t.transaction_type === 'virement') return s._includeVirements !== false;
+    return true;
+  });
+
+  const excluded = transactions.length - filtered.length;
+  if (excluded > 0) {
+    await ctx.reply(`ℹ️ ${excluded} transaction(s) exclue(s).`);
+  }
+
+  if (filtered.length === 0) {
+    clearSession(key);
+    return ctx.reply('ℹ️ Aucune transaction à insérer après filtrage.');
+  }
+  if (filtered.length === 1) {
+    s.data = filtered[0];
+    s._batchPending = null;
+    s._batchRefs = null;
+    s.pendingQueue = [];
+    s.batchTotal = 1;
+    s.batchDone = 0;
+    setSession(key, s);
+    return advance(ctx, key);
+  }
+
+  // Passer au résumé batch — remplace la session en place
+  clearSession(key);
+  return showBatchSummary(ctx, s.userId, filtered, refs);
 }
 
 // ─── Résumé batch ─────────────────────────────────────────────
