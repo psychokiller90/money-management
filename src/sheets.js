@@ -14,6 +14,7 @@ function columnLetter(idx) {
 let _sheets = null;
 let _refsCache = null;
 let _expensesCache = null;
+let _sheetIdsCache = null; // { [sheetTitle]: sheetId }
 const EXPENSES_CACHE_TTL_MS = 60 * 1000;
 
 function getSheetsClient() {
@@ -28,6 +29,22 @@ function getSheetsClient() {
 
 function spreadsheetId() {
   return process.env.SPREADSHEET_ID;
+}
+
+/**
+ * Récupère les sheetId numériques de chaque onglet (pour batchUpdate).
+ * Cache illimité (les IDs sont stables pour la durée de vie du process).
+ */
+async function getSheetIds() {
+  if (_sheetIdsCache) return _sheetIdsCache;
+  const sheets = getSheetsClient();
+  const { data } = await sheets.spreadsheets.get({ spreadsheetId: spreadsheetId() });
+  const out = {};
+  for (const s of data.sheets || []) {
+    out[s.properties.title] = s.properties.sheetId;
+  }
+  _sheetIdsCache = out;
+  return out;
 }
 
 /**
@@ -317,6 +334,153 @@ export async function loadGlobalView() {
 }
 
 /**
+ * Met à jour une dépense existante (par rowIndex 1-based).
+ * data : { categorie, date, enseigne, designation, montant }
+ */
+export async function updateExpense(rowIndex, d) {
+  const sheets = getSheetsClient();
+  const [year, month, day] = d.date.split('-').map(Number);
+  const dateFormula = `=DATE(${year};${month};${day})`;
+  const row = [
+    d.categorie,
+    dateFormula,
+    d.enseigne,
+    d.designation || '',
+    Number(d.montant),
+  ];
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: spreadsheetId(),
+    range: `'${DEPENSES_SHEET}'!A${rowIndex}:E${rowIndex}`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [row] },
+  });
+  _expensesCache = null;
+  return row;
+}
+
+/**
+ * Supprime physiquement une ligne de l'onglet Dépenses (par rowIndex 1-based).
+ */
+export async function deleteExpense(rowIndex) {
+  const sheets = getSheetsClient();
+  const ids = await getSheetIds();
+  const sheetId = ids[DEPENSES_SHEET];
+  if (sheetId === undefined) throw new Error(`Onglet ${DEPENSES_SHEET} introuvable.`);
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: rowIndex - 1, // 0-indexed exclusive
+              endIndex: rowIndex,
+            },
+          },
+        },
+      ],
+    },
+  });
+  _expensesCache = null;
+}
+
+/**
+ * Liste les plages nommées du document.
+ */
+async function listNamedRanges() {
+  const sheets = getSheetsClient();
+  const { data } = await sheets.spreadsheets.get({
+    spreadsheetId: spreadsheetId(),
+    fields: 'namedRanges',
+  });
+  return data.namedRanges || [];
+}
+
+/**
+ * Crée ou met à jour une plage nommée pointant vers la colonne d'enseignes
+ * d'une catégorie (lignes 2..50).
+ * @param {string} cat
+ * @param {string} colLetter
+ */
+async function upsertNamedRangeForCategory(cat, colLetter) {
+  const sheets = getSheetsClient();
+  const ids = await getSheetIds();
+  const dataSheetId = ids[DATA_SHEET];
+  if (dataSheetId === undefined) throw new Error(`Onglet ${DATA_SHEET} introuvable.`);
+  const colIdx = colLetter.charCodeAt(0) - 65; // A → 0
+
+  const namedRanges = await listNamedRanges();
+  const existing = namedRanges.find((nr) => nr.name === cat);
+
+  const rangeDef = {
+    sheetId: dataSheetId,
+    startRowIndex: 1, // ligne 2 (0-indexed)
+    endRowIndex: 50,
+    startColumnIndex: colIdx,
+    endColumnIndex: colIdx + 1,
+  };
+
+  const requests = [];
+  if (existing) {
+    requests.push({
+      updateNamedRange: {
+        namedRange: { namedRangeId: existing.namedRangeId, name: cat, range: rangeDef },
+        fields: 'name,range',
+      },
+    });
+  } else {
+    requests.push({
+      addNamedRange: { namedRange: { name: cat, range: rangeDef } },
+    });
+  }
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: { requests },
+  });
+}
+
+/**
+ * Supprime la plage nommée pour une catégorie (no-op si absente).
+ */
+async function deleteNamedRangeForCategory(cat) {
+  const sheets = getSheetsClient();
+  const namedRanges = await listNamedRanges();
+  const existing = namedRanges.find((nr) => nr.name === cat);
+  if (!existing) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [{ deleteNamedRange: { namedRangeId: existing.namedRangeId } }],
+    },
+  });
+}
+
+/**
+ * Renomme une plage nommée existante (no-op si absente).
+ */
+async function renameNamedRangeForCategory(oldName, newName) {
+  const sheets = getSheetsClient();
+  const namedRanges = await listNamedRanges();
+  const existing = namedRanges.find((nr) => nr.name === oldName);
+  if (!existing) return;
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [
+        {
+          updateNamedRange: {
+            namedRange: { namedRangeId: existing.namedRangeId, name: newName, range: existing.range },
+            fields: 'name',
+          },
+        },
+      ],
+    },
+  });
+}
+
+/**
  * Réécrit la colonne `data` d'une catégorie avec la liste fournie
  * (header inchangé en ligne 1, enseignes en lignes 2..N+1, le reste vidé).
  * @param {string} categorie
@@ -395,7 +559,16 @@ export async function addCategorie(name) {
     requestBody: { values: [[trimmed]] },
   });
   _refsCache = null;
-  return { col, name: trimmed };
+
+  // P6 — auto-création de la plage nommée pour la validation INDIRECT
+  let namedRangeOk = true;
+  try {
+    await upsertNamedRangeForCategory(trimmed, col);
+  } catch (err) {
+    console.error('[upsertNamedRangeForCategory]', err);
+    namedRangeOk = false;
+  }
+  return { col, name: trimmed, namedRangeOk };
 }
 
 /**
@@ -413,6 +586,16 @@ export async function delCategorie(name) {
     range: `${DATA_SHEET}!${col}1:${col}50`,
   });
   _refsCache = null;
+
+  // P6 — supprime la plage nommée associée
+  let namedRangeOk = true;
+  try {
+    await deleteNamedRangeForCategory(name);
+  } catch (err) {
+    console.error('[deleteNamedRangeForCategory]', err);
+    namedRangeOk = false;
+  }
+  return { namedRangeOk };
 }
 
 /**
@@ -445,6 +628,16 @@ export async function renameCategorie(oldName, newName) {
     requestBody: { values: [[trimmed]] },
   });
   _refsCache = null;
+
+  // P6 — renomme la plage nommée associée
+  let namedRangeOk = true;
+  try {
+    await renameNamedRangeForCategory(oldName, trimmed);
+  } catch (err) {
+    console.error('[renameNamedRangeForCategory]', err);
+    namedRangeOk = false;
+  }
+  return { namedRangeOk };
 }
 
 /**

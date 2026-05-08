@@ -1,6 +1,12 @@
 import { Markup } from 'telegraf';
 import { analyzeInvoice, analyzeInvoicePdf } from '../mistral.js';
-import { appendExpense, loadReferences, addEnseigne, findDuplicate } from '../sheets.js';
+import {
+  appendExpense,
+  updateExpense,
+  loadReferences,
+  addEnseigne,
+  findDuplicate,
+} from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -384,20 +390,26 @@ export async function handleConfirm(ctx) {
   const s = sessions.get(key);
   if (!s) return ctx.answerCbQuery('Session expirée.');
 
-  await ctx.answerCbQuery('Insertion...');
+  await ctx.answerCbQuery(s.isExisting ? 'Mise à jour...' : 'Insertion...');
   await ctx.editMessageReplyMarkup(null).catch(() => {});
 
   try {
-    await appendExpense({
+    const payload = {
       categorie: s.data.categorie,
       date: s.data.date,
       enseigne: s.data.enseigne,
       designation: s.data.designation || '',
       montant: s.data.montant,
-    });
+    };
+    if (s.isExisting && s.rowIndex) {
+      await updateExpense(s.rowIndex, payload);
+    } else {
+      await appendExpense(payload);
+    }
     const recap = formatRecap(s.data);
+    const title = s.isExisting ? 'Dépense mise à jour' : 'Dépense enregistrée';
     clearSession(key);
-    await ctx.reply(`✅ <b>Dépense enregistrée</b>\n\n${recap}`, { parse_mode: 'HTML' });
+    await ctx.reply(`✅ <b>${title}</b>\n\n${recap}`, { parse_mode: 'HTML' });
   } catch (err) {
     console.error('[handleConfirm]', err);
     await ctx.reply(`❌ Erreur Sheets : ${err.message}`);
@@ -419,6 +431,33 @@ export async function handleEdit(ctx) {
 
   await ctx.answerCbQuery();
   await ctx.editMessageReplyMarkup(null).catch(() => {});
+  await showEditMenu(ctx, key);
+}
+
+/**
+ * Démarre un flow d'édition pour une dépense déjà inscrite dans le Sheet.
+ * Appelé par /derniere (handlers/expense.js).
+ */
+export async function startEditExisting(ctx, userId, expense) {
+  const key = newKey();
+  const isoDate = expense.date
+    ? expense.date.toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+  const data = {
+    categorie: expense.categorie,
+    date: isoDate,
+    enseigne: expense.enseigne,
+    designation: expense.designation || '',
+    montant: expense.montant,
+  };
+  setSession(key, {
+    userId,
+    data,
+    awaitingTextFor: null,
+    isExisting: true,
+    rowIndex: expense.rowIndex,
+  });
+  await ctx.reply(formatRecap(data), { parse_mode: 'HTML' });
   await showEditMenu(ctx, key);
 }
 

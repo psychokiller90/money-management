@@ -18,6 +18,15 @@ import {
 } from './handlers/photo.js';
 import { handleStats, handleSemaine, handleMois } from './handlers/stats.js';
 import {
+  handleDerniere,
+  handleCherche,
+  handleGraph,
+  handleExpDel,
+  handleExpDelConfirm,
+  handleExpMod,
+  handleExpCancel,
+} from './handlers/expense.js';
+import {
   handleCategories,
   handleAddEnseigne,
   handleDelEnseigne,
@@ -49,21 +58,34 @@ bot.start((ctx) =>
 
 bot.help((ctx) =>
   ctx.reply(
-    '📖 <b>Utilisation</b>\n\n' +
-      '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture → analyse IA → insertion Sheets\n' +
-      '• Album de photos = traitement individuel de chaque facture\n' +
-      "• L'IA propose la catégorie et l'enseigne ; en cas de doute tu choisis\n" +
-      '• Détection auto des doublons (même date, montant, enseigne ±2j)\n' +
-      '• Avant insertion : ✏️ Modifier permet de corriger chaque champ\n\n' +
-      '<b>Statistiques :</b>\n' +
-      '• /stats — vue globale (imprévus, total, objectif, solde)\n' +
-      '• /semaine — 7 derniers jours\n' +
-      '• /mois [YYYY-MM] — résumé détaillé du mois\n\n' +
-      '<b>Gestion des listes :</b>\n' +
-      '• /categories — affiche catégories & enseignes\n' +
-      '• /addcategorie /delcategorie /renamecategorie\n' +
-      '• /addenseigne /delenseigne /renameenseigne\n\n' +
-      '<b>Colonnes Sheet :</b> Catégorie | Date | Type/Enseigne | Désignation | Montant',
+    '📖 <b>Guide complet</b>\n\n' +
+      '<b>📸 Saisie de dépense</b>\n' +
+      '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture\n' +
+      '• L\'IA détecte catégorie, enseigne, date, montant, désignation\n' +
+      '• Si l\'IA hésite → tu choisis via boutons (option « Nouvelle » dispo)\n' +
+      '• Détection automatique des doublons (±2 jours)\n' +
+      '• Avant insertion : ✏️ Modifier ouvre un menu par champ\n' +
+      '• Album de photos → traité individuellement, une carte par facture\n\n' +
+      '<b>📊 Statistiques</b>\n' +
+      '• /stats — vue globale du mois (imprévus, total, objectif, solde) lue depuis l\'onglet « Vue globale »\n' +
+      '• /semaine — résumé des 7 derniers jours (par catégorie + top enseignes)\n' +
+      '• /mois — résumé détaillé du mois en cours\n' +
+      '• /mois <code>YYYY-MM</code> — résumé d\'un mois précis (ex: <code>/mois 2026-04</code>)\n' +
+      '• /graph — camembert des dépenses du mois en cours\n' +
+      '• /graph <code>YYYY-MM</code> — camembert d\'un mois précis\n\n' +
+      '<b>🔎 Recherche & édition</b>\n' +
+      '• /derniere — 5 dernières dépenses avec boutons ✏️ / 🗑️\n' +
+      '• /cherche <code>terme</code> — recherche dans enseigne/catégorie/désignation\n\n' +
+      '<b>🏷️ Gestion des listes</b>\n' +
+      '• /categories — affiche toutes les catégories et leurs enseignes\n' +
+      '• /addcategorie — crée une nouvelle catégorie (+ plage nommée auto)\n' +
+      '• /delcategorie — supprime une catégorie (+ plage nommée)\n' +
+      '• /renamecategorie — renomme une catégorie\n' +
+      '• /addenseigne — ajoute une enseigne dans une catégorie\n' +
+      '• /delenseigne — supprime une enseigne\n' +
+      '• /renameenseigne — renomme une enseigne\n\n' +
+      '<b>ℹ️ Sheet</b>\n' +
+      'Colonnes : Catégorie | Date | Type/Enseigne | Désignation | Montant',
     { parse_mode: 'HTML' }
   )
 );
@@ -71,6 +93,11 @@ bot.help((ctx) =>
 bot.command('stats', handleStats);
 bot.command('semaine', handleSemaine);
 bot.command('mois', handleMois);
+
+// ── Recherche / édition / graph ─────────────────────────────
+bot.command('derniere', handleDerniere);
+bot.command('cherche', handleCherche);
+bot.command('graph', handleGraph);
 
 // ── Admin (P4) ──────────────────────────────────────────────
 bot.command('categories', handleCategories);
@@ -95,6 +122,12 @@ bot.action(/^confirm_([a-z0-9]+)$/, handleConfirm);
 bot.action(/^cancel_([a-z0-9]+)$/, handleCancel);
 bot.action(/^edit_([a-z0-9]+)$/, handleEdit);
 bot.action(/^editfield_([a-z0-9]+)_([a-z]+)$/, handleEditField);
+
+// Expense callbacks (P4 — /derniere)
+bot.action(/^expmod_([a-z0-9]+)$/, handleExpMod);
+bot.action(/^expdel_([a-z0-9]+)$/, handleExpDel);
+bot.action(/^expdelok_([a-z0-9]+)$/, handleExpDelConfirm);
+bot.action(/^expcancel_([a-z0-9]+)$/, handleExpCancel);
 
 // Admin callbacks
 bot.action(/^admincat_(add|del|rename)_(.+)$/, handleAdminCat);
