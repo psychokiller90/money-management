@@ -186,10 +186,14 @@ function serialToDate(serial) {
 const GLOBAL_SHEET = 'Vue globale';
 const GLOBAL_LABELS = {
   imprevus: ['imprevus', 'imprevu'],
-  totalDepenses: ['totaldepenses', 'totaldepense'],
-  objectifEpargne: ['objectifepargne', 'objectifepargnes'],
-  soldeRestant: ['solderestant'],
+  totalDepenses: ['totaldepenses', 'totaldepense', 'totaldepensesmois'],
+  objectifEpargne: ['objectifepargne', 'objectifepargnes', 'objectifsepargne'],
+  soldeRestant: ['solderestant', 'soldedisponible'],
 };
+const MONTHS_FR = [
+  'janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre',
+];
 
 function normalizeLabel(s) {
   return String(s || '')
@@ -208,37 +212,106 @@ function valueNear(grid, row, col) {
 }
 
 /**
- * Lit la feuille "Vue globale" et renvoie les 4 indicateurs clés
- * en cherchant les labels par scan (insensible à la casse / accents / emojis).
- * Retourne les valeurs formatées par le Sheet (ex: "1 234,56 €").
+ * Cherche l'ancrage du mois donné (ex: "Mai", "MAI 2026", "Mai 2026")
+ * dans la grille. Renvoie {r, c} ou null.
  */
-export async function loadGlobalView() {
-  const sheets = getSheetsClient();
-  const { data } = await sheets.spreadsheets.values.get({
-    spreadsheetId: spreadsheetId(),
-    range: `'${GLOBAL_SHEET}'!A1:Z80`,
-    valueRenderOption: 'FORMATTED_VALUE',
-  });
-  const grid = data.values || [];
-  const result = {
-    imprevus: null,
-    totalDepenses: null,
-    objectifEpargne: null,
-    soldeRestant: null,
-  };
+function findMonthAnchor(grid, monthIdx, year) {
+  const month = MONTHS_FR[monthIdx];
+  const candidates = [
+    month,
+    `${month}${year}`,
+    `${month}${String(year).slice(2)}`, // "mai26"
+  ];
   for (let r = 0; r < grid.length; r++) {
     const row = grid[r] || [];
     for (let c = 0; c < row.length; c++) {
       const norm = normalizeLabel(row[c]);
       if (!norm) continue;
-      for (const [key, alts] of Object.entries(GLOBAL_LABELS)) {
-        if (result[key] !== null) continue;
-        if (alts.some((a) => norm === a)) {
-          const v = valueNear(grid, r, c);
-          if (v !== null) result[key] = v;
+      if (candidates.includes(norm)) return { r, c };
+    }
+  }
+  return null;
+}
+
+function findOccurrences(grid, alts) {
+  const out = [];
+  for (let r = 0; r < grid.length; r++) {
+    const row = grid[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const norm = normalizeLabel(row[c]);
+      if (norm && alts.some((a) => norm === a)) out.push({ r, c });
+    }
+  }
+  return out;
+}
+
+/**
+ * Lit la feuille "Vue globale" et renvoie les 4 indicateurs clés
+ * pour le mois courant. Gère 3 layouts :
+ *  - matrice (mois en en-tête de colonnes, labels en colonne)
+ *  - sections verticales (entête mois + labels en-dessous)
+ *  - simple (un seul jeu de labels) → fallback scan
+ */
+export async function loadGlobalView() {
+  const sheets = getSheetsClient();
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId: spreadsheetId(),
+    range: `'${GLOBAL_SHEET}'!A1:Z200`,
+    valueRenderOption: 'FORMATTED_VALUE',
+  });
+  const grid = data.values || [];
+
+  const now = new Date();
+  const monthIdx = now.getUTCMonth();
+  const year = now.getUTCFullYear();
+  const anchor = findMonthAnchor(grid, monthIdx, year);
+
+  const result = {
+    imprevus: null,
+    totalDepenses: null,
+    objectifEpargne: null,
+    soldeRestant: null,
+    monthFound: !!anchor,
+  };
+
+  for (const [key, alts] of Object.entries(GLOBAL_LABELS)) {
+    const occurrences = findOccurrences(grid, alts);
+    if (occurrences.length === 0) continue;
+
+    // 1) Matrice : ancre dans une ligne au-dessus du label, à une colonne différente
+    if (anchor) {
+      let picked = null;
+      for (const occ of occurrences) {
+        if (anchor.r < occ.r && anchor.c !== occ.c) {
+          const v = grid[occ.r]?.[anchor.c];
+          if (v !== undefined && String(v).trim() !== '') {
+            picked = String(v);
+            break;
+          }
+        }
+      }
+      if (picked !== null) {
+        result[key] = picked;
+        continue;
+      }
+
+      // 2) Sections : prend l'occurrence située APRÈS l'ancre (la plus proche)
+      const after = occurrences
+        .filter((o) => o.r >= anchor.r)
+        .sort((a, b) => a.r - b.r || a.c - b.c);
+      if (after.length > 0) {
+        const v = valueNear(grid, after[0].r, after[0].c);
+        if (v !== null) {
+          result[key] = v;
+          continue;
         }
       }
     }
+
+    // 3) Fallback : première occurrence trouvée
+    const occ = occurrences[0];
+    const v = valueNear(grid, occ.r, occ.c);
+    if (v !== null) result[key] = v;
   }
   return result;
 }

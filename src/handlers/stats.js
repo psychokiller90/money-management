@@ -89,14 +89,20 @@ export async function handleStats(ctx) {
   await withErrorHandling(ctx, async () => {
     const v = await loadGlobalView();
     const fmt = (x) => (x !== null && x !== undefined && String(x).trim() !== '' ? x : '—');
+    const now = new Date();
+    const moisAnnee = `${MOIS_FR[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+    const header = v.monthFound
+      ? `📊 <b>Vue globale — ${moisAnnee}</b>`
+      : `📊 <b>Vue globale</b>\n<i>(⚠️ "${moisAnnee}" introuvable dans le Sheet, valeurs par défaut)</i>`;
     const lines = [
-      '📊 <b>Vue globale</b>\n',
+      header,
+      '',
       `⚡ Imprévus           : <b>${fmt(v.imprevus)}</b>`,
       `📊 Total dépenses     : <b>${fmt(v.totalDepenses)}</b>`,
       `🎯 Objectif épargne   : <b>${fmt(v.objectifEpargne)}</b>`,
       `💳 Solde restant      : <b>${fmt(v.soldeRestant)}</b>`,
       '',
-      '<i>Pour le détail mensuel : /mois</i>',
+      '<i>Pour le détail des dépenses : /mois</i>',
     ];
     await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
   });
