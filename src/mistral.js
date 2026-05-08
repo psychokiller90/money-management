@@ -120,6 +120,88 @@ function parseJSON(raw) {
 }
 
 /**
+ * Extrait les objets transaction valides depuis un JSON potentiellement tronqué.
+ * Parcourt le contenu de l'array "transactions" en cherchant des objets { } complets.
+ */
+function extractPartialTransactions(raw) {
+  const arrStart = raw.indexOf('"transactions"');
+  if (arrStart === -1) return null;
+  const bracketStart = raw.indexOf('[', arrStart);
+  if (bracketStart === -1) return null;
+
+  const transactions = [];
+  let i = bracketStart + 1;
+
+  while (i < raw.length) {
+    // Saute les espaces / virgules
+    while (i < raw.length && /[\s,]/.test(raw[i])) i++;
+    if (i >= raw.length || raw[i] === ']') break;
+    if (raw[i] !== '{') { i++; continue; }
+
+    // Trouve l'accolade fermante correspondante
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    const start = i;
+    let end = -1;
+
+    for (let j = i; j < raw.length; j++) {
+      const c = raw[j];
+      if (escaped) { escaped = false; continue; }
+      if (c === '\\' && inString) { escaped = true; continue; }
+      if (c === '"') { inString = !inString; continue; }
+      if (inString) continue;
+      if (c === '{') depth++;
+      else if (c === '}') {
+        depth--;
+        if (depth === 0) { end = j; break; }
+      }
+    }
+
+    if (end === -1) break; // Objet incomplet → fin du JSON tronqué
+
+    try {
+      const obj = JSON.parse(raw.slice(start, end + 1));
+      if (obj.montant !== undefined) transactions.push(obj);
+    } catch { /* objet mal formé, on ignore */ }
+
+    i = end + 1;
+  }
+
+  return transactions.length > 0 ? transactions : null;
+}
+
+/**
+ * Parse la réponse multi-transactions avec récupération partielle.
+ */
+function parseMultiJSON(raw) {
+  // 1) Parse complet
+  try {
+    const parsed = JSON.parse(raw.trim());
+    if (parsed.transactions) return parsed;
+    if (Array.isArray(parsed)) return { is_statement: true, transactions: parsed };
+  } catch { /* continue */ }
+
+  // 2) Extraction du bloc JSON principal
+  const match = raw.match(/\{[\s\S]*/);
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[0]);
+      if (parsed.transactions) return parsed;
+    } catch { /* continue */ }
+  }
+
+  // 3) Récupération partielle depuis JSON tronqué
+  const partial = extractPartialTransactions(raw);
+  if (partial) {
+    console.warn(`[parseMultiJSON] JSON tronqué — ${partial.length} transactions récupérées`);
+    return { is_statement: true, transactions: partial };
+  }
+
+  throw new Error(`Réponse IA non parseable (position ~${raw.length}) : ${raw.slice(0, 150)}…`);
+}
+
+/**
  * Analyse un PDF de facture via Mistral OCR + chat completion.
  * 1. Upload du PDF dans Mistral Files API (purpose: ocr)
  * 2. Récupération d'une URL signée
@@ -154,6 +236,8 @@ export async function analyzeInvoicePdf(pdfBuffer, refs, fileName = 'facture.pdf
   if (!ocrText) throw new Error('OCR a retourné un contenu vide.');
 
   // 4) Chat multi-transactions
+  // Pas de responseFormat json_object : le modèle peut tronquer le JSON
+  // et on veut pouvoir récupérer les transactions partielles.
   const response = await client.chat.complete({
     model: 'mistral-small-latest',
     messages: [
@@ -163,14 +247,8 @@ export async function analyzeInvoicePdf(pdfBuffer, refs, fileName = 'facture.pdf
         content: `${buildMultiPrompt(refs)}\n\nContenu OCR :\n---\n${ocrText}\n---`,
       },
     ],
-    maxTokens: 2000,
-    responseFormat: { type: 'json_object' },
+    maxTokens: 8000,
   });
 
-  const parsed = parseJSON(response.choices[0].message.content);
-
-  // Normalise : si l'IA retourne un objet simple (rétro-compat), l'emballe
-  if (Array.isArray(parsed)) return { is_statement: false, transactions: parsed };
-  if (parsed.transactions) return parsed;
-  return { is_statement: false, transactions: [parsed] };
+  return parseMultiJSON(response.choices[0].message.content);
 }
