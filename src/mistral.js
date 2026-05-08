@@ -10,12 +10,16 @@ Les confidences (categorie_confidence, enseigne_confidence) doivent refléter ta
 - "medium" si tu hésites entre 2 options
 - "low" si l'image est floue ou les indices ambigus`;
 
-function buildUserPrompt(refs) {
+function buildCatBlock(refs) {
   const catList = refs.categories.map((c) => `"${c}"`).join(', ');
   const enseignesPerCat = refs.categories
     .map((c) => `  - ${c} : ${refs.enseignes[c].map((e) => `"${e}"`).join(', ') || '(aucune)'}`)
     .join('\n');
+  return { catList, enseignesPerCat };
+}
 
+function buildUserPrompt(refs) {
+  const { catList, enseignesPerCat } = buildCatBlock(refs);
   return `Analyse cette image de facture/ticket et extrais les informations de paiement.
 
 Catégories disponibles (choisis EXACTEMENT une de ces valeurs pour "categorie") :
@@ -38,6 +42,41 @@ Retourne EXACTEMENT ce JSON :
   "enseigne_in_list": true,
   "enseigne_confidence": "high",
   "designation": "Pain, lait, œufs"
+}`;
+}
+
+function buildMultiPrompt(refs) {
+  const { catList, enseignesPerCat } = buildCatBlock(refs);
+  return `Analyse ce document financier (relevé bancaire, extrait de compte, ou facture) et extrais TOUTES les transactions de débit (dépenses).
+
+Catégories disponibles :
+${catList}
+
+Enseignes connues par catégorie :
+${enseignesPerCat}
+
+Règles :
+- Ignore les crédits, virements entrants, soldes, reports et en-têtes.
+- Pour chaque débit : extrais date, montant (positif), enseigne/libellé, catégorie.
+- Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
+- "designation" : résume le libellé en 3-8 mots, ou null si le libellé IS déjà l'enseigne.
+- S'il n'y a qu'une seule transaction (facture simple) → tableau à 1 élément.
+
+Retourne EXACTEMENT ce JSON (tableau, même pour 1 élément) :
+{
+  "is_statement": true,
+  "transactions": [
+    {
+      "date": "YYYY-MM-DD",
+      "montant": 0.00,
+      "categorie": "Courses",
+      "categorie_confidence": "high",
+      "enseigne": "Leclerc",
+      "enseigne_in_list": true,
+      "enseigne_confidence": "high",
+      "designation": null
+    }
+  ]
 }`;
 }
 
@@ -87,6 +126,10 @@ function parseJSON(raw) {
  * 3. OCR pour extraire le texte
  * 4. Chat completion text-only avec le même prompt système
  */
+/**
+ * Extrait le texte d'un PDF via Mistral OCR puis soumet au chat.
+ * Retourne { is_statement, transactions[] } — toujours un tableau.
+ */
 export async function analyzeInvoicePdf(pdfBuffer, refs, fileName = 'facture.pdf') {
   // 1) Upload
   const uploaded = await client.files.upload({
@@ -108,23 +151,26 @@ export async function analyzeInvoicePdf(pdfBuffer, refs, fileName = 'facture.pdf
     .join('\n\n')
     .trim();
 
-  if (!ocrText) {
-    throw new Error('OCR a retourné un contenu vide.');
-  }
+  if (!ocrText) throw new Error('OCR a retourné un contenu vide.');
 
-  // 4) Chat completion text-only
+  // 4) Chat multi-transactions
   const response = await client.chat.complete({
     model: 'mistral-small-latest',
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
-        content: `${buildUserPrompt(refs)}\n\nContenu OCR de la facture :\n---\n${ocrText}\n---`,
+        content: `${buildMultiPrompt(refs)}\n\nContenu OCR :\n---\n${ocrText}\n---`,
       },
     ],
-    maxTokens: 400,
+    maxTokens: 2000,
     responseFormat: { type: 'json_object' },
   });
 
-  return parseJSON(response.choices[0].message.content);
+  const parsed = parseJSON(response.choices[0].message.content);
+
+  // Normalise : si l'IA retourne un objet simple (rétro-compat), l'emballe
+  if (Array.isArray(parsed)) return { is_statement: false, transactions: parsed };
+  if (parsed.transactions) return parsed;
+  return { is_statement: false, transactions: [parsed] };
 }

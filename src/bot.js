@@ -14,6 +14,8 @@ import {
   handleCancel,
   handleEdit,
   handleEditField,
+  handleBatchAll,
+  handleBatchSeq,
   handleText,
 } from './handlers/photo.js';
 import { handleStats, handleSemaine, handleMois } from './handlers/stats.js';
@@ -122,6 +124,8 @@ bot.action(/^confirm_([a-z0-9]+)$/, handleConfirm);
 bot.action(/^cancel_([a-z0-9]+)$/, handleCancel);
 bot.action(/^edit_([a-z0-9]+)$/, handleEdit);
 bot.action(/^editfield_([a-z0-9]+)_([a-z]+)$/, handleEditField);
+bot.action(/^batchall_([a-z0-9]+)$/, handleBatchAll);
+bot.action(/^batchseq_([a-z0-9]+)$/, handleBatchSeq);
 
 // Expense callbacks (P4 — /derniere)
 bot.action(/^expmod_([a-z0-9]+)$/, handleExpMod);

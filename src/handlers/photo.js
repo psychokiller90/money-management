@@ -134,18 +134,151 @@ export async function handleDocument(ctx) {
     const buffer = Buffer.from(await response.arrayBuffer());
 
     const refs = await loadReferences();
-    const data = await analyzeInvoicePdf(buffer, refs, name || 'facture.pdf');
-
-    const key = newKey();
-    setSession(key, { userId, data, awaitingTextFor: null });
+    const result = await analyzeInvoicePdf(buffer, refs, name || 'facture.pdf');
+    const transactions = result.transactions || [];
 
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
-    await advance(ctx, key);
+
+    if (transactions.length === 0) {
+      return ctx.reply('ℹ️ Aucune transaction détectée dans ce document.');
+    }
+
+    if (transactions.length === 1) {
+      // Facture simple → flow habituel
+      const key = newKey();
+      setSession(key, { userId, data: transactions[0], awaitingTextFor: null });
+      return advance(ctx, key);
+    }
+
+    // Relevé multi-transactions → afficher le résumé
+    return showBatchSummary(ctx, userId, transactions, refs);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
     console.error('[handleDocument]', err);
     await ctx.reply(`❌ Erreur analyse PDF : ${err.message}`);
   }
+}
+
+// ─── Résumé batch ─────────────────────────────────────────────
+function fmtDateShort(isoDate) {
+  if (!isoDate) return '—';
+  const [, m, d] = isoDate.split('-');
+  return `${d}/${m}`;
+}
+
+function fmtAmountShort(n) {
+  return Number(n || 0).toFixed(2).replace('.', ',') + ' €';
+}
+
+async function showBatchSummary(ctx, userId, transactions, refs) {
+  const total = transactions.reduce((s, t) => s + Number(t.montant || 0), 0);
+  const needsReview = transactions.filter(
+    (t) =>
+      !t.categorie ||
+      t.categorie_confidence === 'low' ||
+      !refs.categories.includes(t.categorie) ||
+      t.enseigne_in_list === false
+  ).length;
+
+  const lines = [
+    `📄 <b>${transactions.length} transactions détectées</b>`,
+    `💶 Total : <b>${fmtAmountShort(total)}</b>`,
+    needsReview > 0
+      ? `⚠️ <b>${needsReview}</b> nécessitent une vérification (catégorie incertaine ou enseigne hors liste)`
+      : '✅ Toutes les transactions sont identifiées',
+    '',
+    '<b>Aperçu :</b>',
+  ];
+
+  const shown = transactions.slice(0, 10);
+  for (const t of shown) {
+    const flag =
+      !t.categorie || t.categorie_confidence === 'low' || t.enseigne_in_list === false
+        ? ' ⚠️'
+        : '';
+    lines.push(
+      `• ${fmtDateShort(t.date)} — ${t.enseigne || '?'} — ${fmtAmountShort(t.montant)}${flag}`
+    );
+  }
+  if (transactions.length > 10) {
+    lines.push(`<i>… et ${transactions.length - 10} autre(s)</i>`);
+  }
+
+  const batchKey = newKey();
+  setSession(batchKey, {
+    userId,
+    data: transactions[0],
+    awaitingTextFor: null,
+    pendingQueue: transactions.slice(1),
+    batchTotal: transactions.length,
+    batchDone: 0,
+  });
+
+  await ctx.reply(lines.join('\n'), {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('✅ Tout insérer', `batchall_${batchKey}`)],
+      [Markup.button.callback('🔎 Un par un', `batchseq_${batchKey}`)],
+      [Markup.button.callback('❌ Annuler', `cancel_${batchKey}`)],
+    ]),
+  });
+}
+
+// ─── Batch : tout insérer ─────────────────────────────────────
+export async function handleBatchAll(ctx) {
+  const key = ctx.match[1];
+  const s = sessions.get(key);
+  if (!s) return ctx.answerCbQuery('Session expirée.');
+  await ctx.answerCbQuery('Insertion en cours...');
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+
+  const all = [s.data, ...(s.pendingQueue || [])];
+  let ok = 0;
+  const errors = [];
+  for (const t of all) {
+    try {
+      if (!t.date || !t.montant || !t.enseigne || !t.categorie) {
+        errors.push(`${t.enseigne || '?'} — données incomplètes`);
+        continue;
+      }
+      await appendExpense({
+        categorie: t.categorie,
+        date: t.date,
+        enseigne: t.enseigne,
+        designation: t.designation || '',
+        montant: t.montant,
+      });
+      ok++;
+    } catch (err) {
+      errors.push(`${t.enseigne || '?'} — ${err.message}`);
+    }
+  }
+  clearSession(key);
+
+  const lines = [`✅ <b>${ok}/${all.length} transactions insérées</b>`];
+  if (errors.length > 0) {
+    lines.push('');
+    lines.push('⚠️ Erreurs :');
+    errors.forEach((e) => lines.push(`• ${e}`));
+  }
+  await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+}
+
+// ─── Batch : un par un (démarre la séquence) ──────────────────
+export async function handleBatchSeq(ctx) {
+  const key = ctx.match[1];
+  const s = sessions.get(key);
+  if (!s) return ctx.answerCbQuery('Session expirée.');
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+
+  const total = s.batchTotal;
+  await ctx.reply(
+    `🔎 Révision une par une — <b>${total} transactions</b>\nChaque transaction sera présentée individuellement.`,
+    { parse_mode: 'HTML' }
+  );
+  await ctx.reply(`<b>1/${total}</b>`, { parse_mode: 'HTML' });
+  await advance(ctx, key);
 }
 
 // ─── Orchestration ────────────────────────────────────────────
@@ -406,8 +539,39 @@ export async function handleConfirm(ctx) {
     } else {
       await appendExpense(payload);
     }
+
+    // ── Mode batch séquentiel : passe à la transaction suivante ──
+    if (s.pendingQueue && s.pendingQueue.length > 0) {
+      const nextData = s.pendingQueue.shift();
+      const batchDone = (s.batchDone || 0) + 1;
+      const batchTotal = s.batchTotal || batchDone + s.pendingQueue.length + 1;
+      const nextKey = newKey();
+      setSession(nextKey, {
+        userId: s.userId,
+        data: nextData,
+        awaitingTextFor: null,
+        pendingQueue: s.pendingQueue,
+        batchTotal,
+        batchDone,
+        duplicateAcknowledged: false,
+      });
+      clearSession(key);
+      await ctx.reply(
+        `✅ <b>${batchDone}/${batchTotal}</b> insérée.\n\n➡️ <b>${batchDone + 1}/${batchTotal}</b> :`,
+        { parse_mode: 'HTML' }
+      );
+      return advance(ctx, nextKey);
+    }
+
+    // ── Transaction seule ou dernière de la séquence ──────────────
     const recap = formatRecap(s.data);
-    const title = s.isExisting ? 'Dépense mise à jour' : 'Dépense enregistrée';
+    const wasBatch = s.batchTotal && s.batchTotal > 1;
+    const batchDone = (s.batchDone || 0) + 1;
+    const title = s.isExisting
+      ? 'Dépense mise à jour'
+      : wasBatch
+      ? `✅ ${batchDone}/${s.batchTotal} — Toutes insérées`
+      : 'Dépense enregistrée';
     clearSession(key);
     await ctx.reply(`✅ <b>${title}</b>\n\n${recap}`, { parse_mode: 'HTML' });
   } catch (err) {
