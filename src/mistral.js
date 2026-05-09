@@ -55,16 +55,37 @@ ${catList}
 Enseignes connues par catégorie :
 ${enseignesPerCat}
 
-Règles :
+═══ RÈGLES IMPORTANTES DE MATCHING D'ENSEIGNE ═══
+
+1. Si le libellé CONTIENT le nom d'une enseigne existante (insensible à la casse), utilise CETTE enseigne avec enseigne_in_list=true et confidence="high". Exemples :
+   - "BOULANGERIE EPIN", "BOULANGERIE PAUL", "Au Pain de la Boulangerie" → enseigne="Boulangerie", catégorie="Courses"
+   - "PHARMACIE DU CENTRE", "PHARMA SAINT JEAN" → enseigne="Pharmacie", catégorie="Imprevus"
+   - "RESTAURANT LE BISTROT", "RESTAU DU COIN" → enseigne="Restaurant" ou "Restau", catégorie="Imprevus"
+   - "BAR DU PORT", "LE BAR DES SPORTS" → enseigne="Bar", catégorie="Imprevus"
+
+2. Variantes connues d'enseignes : matche les variantes
+   - "Carrefour Market", "Carrefour Express", "Carrefour Drive" → "Carrefour" (si présent)
+   - "Leclerc Drive" → "Leclerc"
+   - "Action Pro", "Action SA" → "Action"
+   - "Tang Freres", "Tang Frères" → "Tang Frères"
+
+3. Catégorisation par sémantique du libellé (même si l'enseigne exacte est inconnue) :
+   - Mots "BOULANGERIE", "PATISSERIE", "EPICERIE", "ALIMENT", "PRIMEUR", "FRUITS LEGUMES" → Courses
+   - Mots "PHARMACIE", "MEDICAL", "RESTAURANT", "RESTAU", "BAR", "FAST FOOD", "MCDO", "BURGER", "KFC" → Imprevus
+   - Mots "EDF", "ENGIE", "EAU", "GAZ", "LOYER", "SCI" → Factures
+   - Mots "NETFLIX", "SPOTIFY", "AMAZON PRIME", "DISNEY", "BASIC FIT", "CANAL+", "SFR", "ORANGE", "BOUYGUES", "FREE MOBILE", "NAVIGO" → Abonnements
+
+4. Si AUCUN match clair → enseigne_in_list=false avec le libellé tel quel + categorie="Imprevus" + confidence="low"
+
+═══ RÈGLES GÉNÉRALES ═══
 - Ignore les crédits, remboursements, soldes, reports et en-têtes.
-- Pour chaque débit : extrais date, montant (positif), enseigne/libellé, catégorie.
-- Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
+- Pour chaque débit : extrais date, montant positif, enseigne/libellé, catégorie.
 - "designation" : résume le libellé en 3-8 mots, ou null si le libellé est déjà l'enseigne.
-- S'il n'y a qu'une seule transaction (facture simple) → tableau à 1 élément.
-- Champ "transaction_type" :
-  * "retrait" si c'est un retrait d'espèces / DAB / ATM
-  * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)
-  * "debit" pour tout autre achat/dépense
+- "transaction_type" :
+  * "retrait" → retrait d'espèces / DAB / ATM / "RETRAIT"
+  * "virement" → virement sortant / SCT / SEPA OUT / "VIR " / prélèvement entre comptes
+  * "debit" → tout autre achat
+- Confidence "high" si match direct ou règle 1-3 appliquée. "low" UNIQUEMENT si vraiment indéterminable.
 
 Retourne EXACTEMENT ce JSON :
 {
@@ -76,7 +97,7 @@ Retourne EXACTEMENT ce JSON :
       "transaction_type": "debit",
       "categorie": "Courses",
       "categorie_confidence": "high",
-      "enseigne": "Leclerc",
+      "enseigne": "Boulangerie",
       "enseigne_in_list": true,
       "enseigne_confidence": "high",
       "designation": null
