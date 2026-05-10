@@ -5,6 +5,7 @@ import {
   handlePhoto,
   handleDocument,
   handleCategory,
+  handleCategoryNew,
   handleEnseigne,
   handleEnseigneNew,
   handleDesignationSkip,
@@ -44,6 +45,16 @@ import {
   handleAdminDelCatConfirm,
   handleAdminCancel,
 } from './handlers/admin.js';
+import {
+  handleDoublons,
+  handleDedupe,
+  handleDupDel,
+  handleDupKeep,
+  handleDupSkip,
+  handleDupStop,
+  handleDedupOk,
+  handleDedupCancel,
+} from './handlers/duplicates.js';
 import { checkAndRemind } from './handlers/reminder.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -79,6 +90,10 @@ bot.help((ctx) =>
       '<b>🔎 Recherche & édition</b>\n' +
       '• /derniere — 5 dernières dépenses avec boutons ✏️ / 🗑️\n' +
       '• /cherche <code>terme</code> — recherche dans enseigne/catégorie/désignation\n\n' +
+      '<b>🔁 Doublons (historique)</b>\n' +
+      '• /doublons — revue interactive des doublons (date stricte)\n' +
+      '• /doublons <code>N</code> — tolérance ±N jours (ex: <code>/doublons 2</code>)\n' +
+      '• /dedupe — auto-suppression des doublons stricts (date+enseigne+montant+catégorie+désignation, garde la 1ère occurrence)\n\n' +
       '<b>🏷️ Gestion des listes</b>\n' +
       '• /categories — affiche toutes les catégories et leurs enseignes\n' +
       '• /addcategorie — crée une nouvelle catégorie (+ plage nommée auto)\n' +
@@ -102,6 +117,10 @@ bot.command('derniere', handleDerniere);
 bot.command('cherche', handleCherche);
 bot.command('graph', handleGraph);
 
+// ── Doublons ────────────────────────────────────────────────
+bot.command('doublons', handleDoublons);
+bot.command('dedupe', handleDedupe);
+
 // ── Admin (P4) ──────────────────────────────────────────────
 bot.command('categories', handleCategories);
 bot.command('addenseigne', handleAddEnseigne);
@@ -116,6 +135,7 @@ bot.on('photo', handlePhoto);
 bot.on('document', handleDocument);
 
 bot.action(/^cat_([a-z0-9]+)_(.+)$/, handleCategory);
+bot.action(/^catnew_([a-z0-9]+)$/, handleCategoryNew);
 bot.action(/^ensnew_([a-z0-9]+)$/, handleEnseigneNew);
 bot.action(/^ens_([a-z0-9]+)_(\d+)$/, handleEnseigne);
 bot.action(/^desigskip_([a-z0-9]+)$/, handleDesignationSkip);
@@ -134,6 +154,14 @@ bot.action(/^expmod_([a-z0-9]+)$/, handleExpMod);
 bot.action(/^expdel_([a-z0-9]+)$/, handleExpDel);
 bot.action(/^expdelok_([a-z0-9]+)$/, handleExpDelConfirm);
 bot.action(/^expcancel_([a-z0-9]+)$/, handleExpCancel);
+
+// Doublons callbacks
+bot.action(/^dupdel_([a-z0-9]+)_(\d+)$/, handleDupDel);
+bot.action(/^dupkeep_([a-z0-9]+)$/, handleDupKeep);
+bot.action(/^dupskip_([a-z0-9]+)$/, handleDupSkip);
+bot.action(/^dupstop_([a-z0-9]+)$/, handleDupStop);
+bot.action(/^dedupok_([a-z0-9]+)$/, handleDedupOk);
+bot.action(/^dedupcancel_([a-z0-9]+)$/, handleDedupCancel);
 
 // Admin callbacks
 bot.action(/^admincat_(add|del|rename)_(.+)$/, handleAdminCat);

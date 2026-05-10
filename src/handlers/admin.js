@@ -304,8 +304,8 @@ export async function handleAdminDelCatConfirm(ctx) {
     await delCategorie(sess.categorie);
     clearAdmin(ctx.from.id);
     await ctx.reply(
-      `✅ Catégorie <b>${sess.categorie}</b> supprimée.\n\n` +
-        '⚠️ Pense à mettre à jour les <b>plages nommées</b> et la <b>validation INDIRECT()</b> dans le Sheet si nécessaire.',
+      `✅ Catégorie <b>${sess.categorie}</b> supprimée.\n` +
+        '<i>Plage nommée et validation dropdown mises à jour automatiquement.</i>',
       { parse_mode: 'HTML' }
     );
   } catch (err) {
@@ -358,8 +358,8 @@ export async function tryHandleAdminText(ctx) {
       const { name } = await addCategorie(text);
       clearAdmin(ctx.from.id);
       await ctx.reply(
-        `✅ Catégorie <b>${name}</b> ajoutée.\n\n` +
-          '⚠️ Pense à créer la <b>plage nommée</b> correspondante et à étendre la <b>validation INDIRECT()</b> dans le Sheet.',
+        `✅ Catégorie <b>${name}</b> ajoutée.\n` +
+          '<i>Plage nommée et validation dropdown mises à jour automatiquement.</i>',
         { parse_mode: 'HTML' }
       );
     } catch (err) {
@@ -374,8 +374,9 @@ export async function tryHandleAdminText(ctx) {
       await renameCategorie(sess.categorie, text);
       clearAdmin(ctx.from.id);
       await ctx.reply(
-        `✅ <b>${sess.categorie}</b> → <b>${text}</b>.\n\n` +
-          '⚠️ Anciennes dépenses non migrées. Pense à mettre à jour la <b>plage nommée</b> et la validation INDIRECT() côté Sheet.',
+        `✅ <b>${sess.categorie}</b> → <b>${text}</b>.\n` +
+          '<i>Plage nommée et validation dropdown mises à jour automatiquement.\n' +
+          'Note : les dépenses déjà saisies conservent l\'ancien nom.</i>',
         { parse_mode: 'HTML' }
       );
     } catch (err) {
