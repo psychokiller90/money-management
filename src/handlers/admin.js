@@ -7,7 +7,7 @@ import {
   addCategorie,
   delCategorie,
   renameCategorie,
-} from '../db.js';
+} from '../sheets.js';
 
 const SESSION_TTL_MS = 10 * 60 * 1000;
 

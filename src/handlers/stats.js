@@ -1,5 +1,4 @@
-import { listExpenses } from '../db.js';
-import { loadGlobalView } from '../sheets.js'; // transitoire jusqu'à phase 6
+import { listExpenses, loadGlobalView } from '../sheets.js';
 
 const CAT_EMOJI = {
   Courses: '🛒',
