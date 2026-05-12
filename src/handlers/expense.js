@@ -1,10 +1,10 @@
 import { Markup } from 'telegraf';
-import { listExpenses, deleteExpense } from '../sheets.js';
+import { listExpenses, deleteExpense } from '../db.js';
 import { startEditExisting } from './photo.js';
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
 
-// key → { userId, rowIndex, expense, updatedAt }
+// key → { userId, id, expense, updatedAt }
 const expenseSessions = new Map();
 
 let _keyCounter = 0;
@@ -60,7 +60,7 @@ export async function handleDerniere(ctx) {
 
     const sorted = [...all]
       .filter((e) => e.date)
-      .sort((a, b) => b.date.getTime() - a.date.getTime() || b.rowIndex - a.rowIndex)
+      .sort((a, b) => b.date.getTime() - a.date.getTime() || (b.id || '').localeCompare(a.id || ''))
       .slice(0, 5);
 
     const lines = ['🕐 <b>5 dernières dépenses</b>\n'];
@@ -70,7 +70,7 @@ export async function handleDerniere(ctx) {
       lines.push(formatExpenseLine(idx, e));
       lines.push('');
       const key = newKey();
-      setSession(key, { userId: ctx.from.id, rowIndex: e.rowIndex, expense: e });
+      setSession(key, { userId: ctx.from.id, id: e.id, expense: e });
       buttonRows.push([
         Markup.button.callback(`✏️ #${idx}`, `expmod_${key}`),
         Markup.button.callback(`🗑️ #${idx}`, `expdel_${key}`),
@@ -159,9 +159,10 @@ export async function handleExpDelConfirm(ctx) {
   await ctx.answerCbQuery('Suppression...');
   await ctx.editMessageReplyMarkup(null).catch(() => {});
   try {
-    await deleteExpense(s.rowIndex);
+    await deleteExpense(s.id);
     clearSession(key);
-    await ctx.reply(`✅ Dépense supprimée (ligne ${s.rowIndex}).`);
+    const shortId = (s.id || '').slice(0, 8);
+    await ctx.reply(`✅ Dépense supprimée (<code>#${shortId}</code>).`, { parse_mode: 'HTML' });
   } catch (err) {
     console.error('[deleteExpense]', err);
     await ctx.reply(`❌ Erreur suppression : ${err.message}`);

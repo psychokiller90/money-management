@@ -1,4 +1,4 @@
-import { listExpenses } from '../sheets.js';
+import { listExpenses } from '../db.js';
 
 const DAY_MS = 86400 * 1000;
 

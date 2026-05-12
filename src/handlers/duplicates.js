@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf';
-import { findDuplicateGroups, deleteExpenses } from '../sheets.js';
+import { findDuplicateGroups, deleteExpenses } from '../db.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const sessions = new Map();
@@ -39,25 +39,17 @@ function fmtDate(d) {
   return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
 }
 
+function shortId(id) {
+  return id ? id.slice(0, 8) : '?';
+}
+
 function formatGroup(group) {
   const lines = [];
   group.forEach((e, i) => {
     lines.push(`<b>${i + 1}.</b> ${fmtDate(e.date)} — ${e.enseigne} — ${fmtAmt(e.montant)}`);
-    lines.push(`   <i>${e.categorie}${e.designation ? ' · ' + e.designation : ''}</i> [ligne ${e.rowIndex}]`);
+    lines.push(`   <i>${e.categorie}${e.designation ? ' · ' + e.designation : ''}</i> <code>#${shortId(e.id)}</code>`);
   });
   return lines.join('\n');
-}
-
-/**
- * Décrémente les rowIndex de toutes les entrées des autres groupes situées
- * APRÈS la ligne supprimée (la suppression physique décale les indices).
- */
-function decrementRowIndicesAfter(session, deletedRowIndex) {
-  for (const group of session.groups) {
-    for (const e of group) {
-      if (e.rowIndex > deletedRowIndex) e.rowIndex--;
-    }
-  }
 }
 
 // ─── /doublons [tolérance] : flow interactif ─────────────────
@@ -118,7 +110,7 @@ async function showGroup(ctx, key) {
     `Que faire ?`;
 
   const buttons = group.map((e, i) => [
-    Markup.button.callback(`🗑️ Supprimer #${i + 1} (ligne ${e.rowIndex})`, `dupdel_${key}_${i}`),
+    Markup.button.callback(`🗑️ Supprimer #${i + 1} (${shortId(e.id)})`, `dupdel_${key}_${i}`),
   ]);
   buttons.push([
     Markup.button.callback('✅ Garder tout', `dupkeep_${key}`),
@@ -143,16 +135,16 @@ export async function handleDupDel(ctx) {
   await ctx.editMessageReplyMarkup(null).catch(() => {});
 
   try {
-    await deleteExpenses([target.rowIndex]);
+    await deleteExpenses([target.id]);
     s.stats.deleted++;
-    decrementRowIndicesAfter(s, target.rowIndex);
+    // Pas besoin de décaler les ids (UUIDs ≠ rowIndex)
 
     // Retire l'entrée du groupe en cours
     group.splice(idx, 1);
 
     if (group.length >= 2) {
       // Il reste encore des candidats dans ce groupe → on rejoue la sélection
-      await ctx.reply(`✅ Ligne ${target.rowIndex} supprimée. ${group.length} entrées restent dans ce groupe.`);
+      await ctx.reply(`✅ Transaction <code>${shortId(target.id)}</code> supprimée. ${group.length} entrées restent dans ce groupe.`, { parse_mode: 'HTML' });
       setSession(key, s);
       return showGroup(ctx, key);
     }
@@ -224,13 +216,16 @@ export async function handleDedupe(ctx) {
     const toDelete = [];
     const previewLines = [];
     for (const group of groups) {
-      const sortedGroup = [...group].sort((a, b) => a.rowIndex - b.rowIndex);
+      // Tri par date asc puis id pour stabilité ; on garde la "première" trouvée
+      const sortedGroup = [...group].sort(
+        (a, b) => a.date.getTime() - b.date.getTime() || (a.id || '').localeCompare(b.id || '')
+      );
       const kept = sortedGroup[0];
       const removes = sortedGroup.slice(1);
       previewLines.push(
-        `• ${fmtDate(kept.date)} — ${kept.enseigne} — ${fmtAmt(kept.montant)} (×${group.length}, garde ligne ${kept.rowIndex})`
+        `• ${fmtDate(kept.date)} — ${kept.enseigne} — ${fmtAmt(kept.montant)} (×${group.length}, garde <code>${shortId(kept.id)}</code>)`
       );
-      removes.forEach((r) => toDelete.push(r.rowIndex));
+      removes.forEach((r) => toDelete.push(r.id));
     }
 
     const shown = previewLines.slice(0, 15).join('\n');

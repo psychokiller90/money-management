@@ -8,7 +8,7 @@ import {
   addCategorie,
   findDuplicate,
   listExpenses,
-} from '../sheets.js';
+} from '../db.js';
 import { tryHandleAdminText } from './admin.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
@@ -417,7 +417,7 @@ export async function handleBatchAll(ctx) {
 
       // Ajoute au snapshot local pour détecter les doublons intra-batch
       localExpenses.push({
-        rowIndex: -1,
+        id: null,
         categorie,
         date: new Date(t.date + 'T00:00:00Z'),
         enseigne: t.enseigne,
@@ -513,12 +513,13 @@ async function warnDuplicate(ctx, key, dup) {
   const dateFr = dup.date
     ? `${String(dup.date.getUTCDate()).padStart(2, '0')}/${String(dup.date.getUTCMonth() + 1).padStart(2, '0')}/${dup.date.getUTCFullYear()}`
     : '—';
+  const shortId = (dup.id || '').slice(0, 8);
   const text =
     '⚠️ <b>Doublon potentiel détecté</b>\n\n' +
     'Une dépense très similaire existe déjà :\n' +
     `• ${dateFr} — ${dup.enseigne} — ${dup.montant} € (${dup.categorie})\n` +
     `${dup.designation ? `• Détail : ${dup.designation}\n` : ''}` +
-    `\nLigne ${dup.rowIndex} dans ton Sheet.\n\nQue veux-tu faire ?`;
+    `\nTransaction <code>#${shortId}</code>.\n\nQue veux-tu faire ?`;
 
   await ctx.reply(text, {
     parse_mode: 'HTML',
@@ -733,8 +734,8 @@ export async function handleConfirm(ctx) {
       designation: s.data.designation || '',
       montant: s.data.montant,
     };
-    if (s.isExisting && s.rowIndex) {
-      await updateExpense(s.rowIndex, payload);
+    if (s.isExisting && s.id) {
+      await updateExpense(s.id, payload);
     } else {
       await appendExpense(payload);
     }
@@ -798,7 +799,7 @@ export async function handleEdit(ctx) {
 }
 
 /**
- * Démarre un flow d'édition pour une dépense déjà inscrite dans le Sheet.
+ * Démarre un flow d'édition pour une dépense déjà persistée.
  * Appelé par /derniere (handlers/expense.js).
  */
 export async function startEditExisting(ctx, userId, expense) {
@@ -818,7 +819,7 @@ export async function startEditExisting(ctx, userId, expense) {
     data,
     awaitingTextFor: null,
     isExisting: true,
-    rowIndex: expense.rowIndex,
+    id: expense.id,
   });
   await ctx.reply(formatRecap(data), { parse_mode: 'HTML' });
   await showEditMenu(ctx, key);
