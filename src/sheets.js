@@ -362,88 +362,28 @@ export async function updateExpense(rowIndex, d) {
  * Supprime physiquement une ligne de l'onglet Dépenses (par rowIndex 1-based).
  */
 export async function deleteExpense(rowIndex) {
-  return deleteExpenses([rowIndex]);
-}
-
-/**
- * Supprime plusieurs lignes en un seul batchUpdate.
- * Trie en ordre décroissant pour que les suppressions ne décalent pas les indices.
- * @param {number[]} rowIndices  rowIndex 1-based
- */
-export async function deleteExpenses(rowIndices) {
-  if (!rowIndices?.length) return;
   const sheets = getSheetsClient();
   const ids = await getSheetIds();
   const sheetId = ids[DEPENSES_SHEET];
   if (sheetId === undefined) throw new Error(`Onglet ${DEPENSES_SHEET} introuvable.`);
-
-  const sorted = [...new Set(rowIndices)].sort((a, b) => b - a);
-  const requests = sorted.map((rowIndex) => ({
-    deleteDimension: {
-      range: {
-        sheetId,
-        dimension: 'ROWS',
-        startIndex: rowIndex - 1,
-        endIndex: rowIndex,
-      },
-    },
-  }));
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: spreadsheetId(),
-    requestBody: { requests },
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: 'ROWS',
+              startIndex: rowIndex - 1, // 0-indexed exclusive
+              endIndex: rowIndex,
+            },
+          },
+        },
+      ],
+    },
   });
   _expensesCache = null;
-}
-
-/**
- * Recherche les groupes de doublons potentiels dans toute la Sheet.
- *
- * @param {object} opts
- * @param {number} [opts.toleranceDays=0]  écart de date toléré pour grouper
- * @param {boolean} [opts.strict=false]    si true : exige aussi catégorie + désignation identiques
- * @returns {Promise<Array<Array<Expense>>>}  liste de groupes (taille >= 2)
- */
-export async function findDuplicateGroups({ toleranceDays = 0, strict = false } = {}) {
-  const all = await listExpenses(true);
-  const items = all.filter((e) => e.date && e.enseigne && e.montant);
-  // Tri stable par date asc → l'élément "gardé" sera le plus ancien (rowIndex le plus bas en cas d'égalité)
-  items.sort((a, b) => a.date.getTime() - b.date.getTime() || a.rowIndex - b.rowIndex);
-
-  const tolMs = toleranceDays * 86400 * 1000;
-  const visited = new Set();
-  const groups = [];
-
-  for (let i = 0; i < items.length; i++) {
-    if (visited.has(i)) continue;
-    const seed = items[i];
-    const seedEns = seed.enseigne.toLowerCase().trim();
-    const seedDate = seed.date.getTime();
-    const seedAmt = seed.montant;
-    const seedCat = (seed.categorie || '').toLowerCase().trim();
-    const seedDesig = (seed.designation || '').toLowerCase().trim();
-
-    const group = [seed];
-    visited.add(i);
-
-    for (let j = i + 1; j < items.length; j++) {
-      if (visited.has(j)) continue;
-      const e = items[j];
-      // Optim : items triés par date — si on dépasse la fenêtre, on peut break
-      if (e.date.getTime() - seedDate > tolMs) break;
-      if (Math.abs(e.montant - seedAmt) > 0.01) continue;
-      if ((e.enseigne || '').toLowerCase().trim() !== seedEns) continue;
-      if (Math.abs(e.date.getTime() - seedDate) > tolMs) continue;
-      if (strict) {
-        if ((e.categorie || '').toLowerCase().trim() !== seedCat) continue;
-        if ((e.designation || '').toLowerCase().trim() !== seedDesig) continue;
-      }
-      group.push(e);
-      visited.add(j);
-    }
-
-    if (group.length > 1) groups.push(group);
-  }
-  return groups;
 }
 
 /**
@@ -568,48 +508,6 @@ async function rewriteEnseigneColumn(categorie, list) {
 }
 
 /**
- * Met à jour la validation de données de la colonne A (Catégorie) dans l'onglet Dépenses.
- * Appelé automatiquement après ajout/suppression/renommage d'une catégorie.
- * @param {string[]} categories
- */
-async function updateCategoryValidation(categories) {
-  if (!categories || categories.length === 0) return;
-  const sheets = getSheetsClient();
-  const ids = await getSheetIds();
-  const sheetId = ids[DEPENSES_SHEET];
-  if (sheetId === undefined) {
-    console.warn('[updateCategoryValidation] Onglet Dépenses introuvable — validation ignorée.');
-    return;
-  }
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: spreadsheetId(),
-    requestBody: {
-      requests: [
-        {
-          setDataValidation: {
-            range: {
-              sheetId,
-              startRowIndex: 1,    // ligne 2 (0-indexed)
-              endRowIndex: 1000,
-              startColumnIndex: 0, // col A
-              endColumnIndex: 1,
-            },
-            rule: {
-              condition: {
-                type: 'ONE_OF_LIST',
-                values: categories.map((v) => ({ userEnteredValue: v })),
-              },
-              showCustomUi: true,
-              strict: false,
-            },
-          },
-        },
-      ],
-    },
-  });
-}
-
-/**
  * Supprime une enseigne de la liste data (compaction de la colonne).
  */
 export async function delEnseigne(categorie, enseigne) {
@@ -670,17 +568,7 @@ export async function addCategorie(name) {
     console.error('[upsertNamedRangeForCategory]', err);
     namedRangeOk = false;
   }
-
-  // Auto-mise à jour de la validation col A (liste catégories)
-  let validationOk = true;
-  try {
-    const updatedCategories = [...refs.categories, trimmed];
-    await updateCategoryValidation(updatedCategories);
-  } catch (err) {
-    console.error('[updateCategoryValidation/add]', err);
-    validationOk = false;
-  }
-  return { col, name: trimmed, namedRangeOk, validationOk };
+  return { col, name: trimmed, namedRangeOk };
 }
 
 /**
@@ -707,17 +595,7 @@ export async function delCategorie(name) {
     console.error('[deleteNamedRangeForCategory]', err);
     namedRangeOk = false;
   }
-
-  // Auto-mise à jour de la validation col A
-  let validationOk = true;
-  try {
-    const updatedCategories = refs.categories.filter((c) => c !== name);
-    await updateCategoryValidation(updatedCategories);
-  } catch (err) {
-    console.error('[updateCategoryValidation/del]', err);
-    validationOk = false;
-  }
-  return { namedRangeOk, validationOk };
+  return { namedRangeOk };
 }
 
 /**
@@ -759,17 +637,7 @@ export async function renameCategorie(oldName, newName) {
     console.error('[renameNamedRangeForCategory]', err);
     namedRangeOk = false;
   }
-
-  // Auto-mise à jour de la validation col A
-  let validationOk = true;
-  try {
-    const updatedCategories = refs.categories.map((c) => (c === oldName ? trimmed : c));
-    await updateCategoryValidation(updatedCategories);
-  } catch (err) {
-    console.error('[updateCategoryValidation/rename]', err);
-    validationOk = false;
-  }
-  return { namedRangeOk, validationOk };
+  return { namedRangeOk };
 }
 
 /**

@@ -5,7 +5,6 @@ import {
   updateExpense,
   loadReferences,
   addEnseigne,
-  addCategorie,
   findDuplicate,
   listExpenses,
 } from '../sheets.js';
@@ -350,35 +349,18 @@ export async function handleBatchAll(ctx) {
   await ctx.answerCbQuery('Insertion en cours...');
   await ctx.editMessageReplyMarkup(null).catch(() => {});
 
-  // Chargement initial — on construit une liste locale pour éviter N allers-retours API
-  const existingExpenses = await listExpenses(true);
+  // Préchargement du cache dépenses pour que findDuplicate soit rapide
+  await listExpenses(true);
   const refs = await loadReferences();
   const fallbackCat = refs.categories.includes(FALLBACK_CATEGORY)
     ? FALLBACK_CATEGORY
-    : refs.categories[0];
+    : refs.categories[0]; // sécurité si Imprevus n'existe pas
 
   const all = [s.data, ...(s.pendingQueue || [])];
   let ok = 0;
   let forcedFallback = 0;
   const skippedDups = [];
   const errors = [];
-
-  // Snapshot local augmenté au fur et à mesure des insertions (évite N rechargements)
-  const localExpenses = [...existingExpenses];
-
-  function findDupLocal(candidate) {
-    if (!candidate.date || !candidate.montant || !candidate.enseigne) return null;
-    const target = new Date(candidate.date + 'T00:00:00Z').getTime();
-    const tolMs = 2 * 86400 * 1000;
-    const ensLow = candidate.enseigne.toLowerCase().trim();
-    const amount = Number(candidate.montant);
-    return localExpenses.find((e) => {
-      if (Math.abs(e.montant - amount) > 0.01) return false;
-      if ((e.enseigne || '').toLowerCase().trim() !== ensLow) return false;
-      if (!e.date) return false;
-      return Math.abs(e.date.getTime() - target) <= tolMs;
-    }) || null;
-  }
 
   for (const t of all) {
     try {
@@ -387,6 +369,8 @@ export async function handleBatchAll(ctx) {
         continue;
       }
 
+      // Si la catégorie est manquante / incertaine / hors liste OU enseigne hors liste
+      // → bascule sur la catégorie de fallback (Imprevus)
       let categorie = t.categorie;
       const needsFallback =
         !categorie ||
@@ -398,31 +382,24 @@ export async function handleBatchAll(ctx) {
         forcedFallback++;
       }
 
-      // Détection doublon sur snapshot local (pas d'appel API supplémentaire)
-      const dup = findDupLocal({ date: t.date, montant: t.montant, enseigne: t.enseigne });
+      // Détection doublon
+      const dup = await findDuplicate({
+        date: t.date,
+        montant: t.montant,
+        enseigne: t.enseigne,
+      });
       if (dup) {
         skippedDups.push(
-          `${t.enseigne} — ${fmtAmountShort(t.montant)} (${fmtDateShort(dup.date?.toISOString?.()?.slice(0,10) ?? '')})`
+          `${t.enseigne} — ${t.montant} € (ligne ${dup.rowIndex}, ${fmtDateShort(dup.date)})`
         );
         continue;
       }
-
       await appendExpense({
         categorie,
         date: t.date,
         enseigne: t.enseigne,
         designation: t.designation || '',
         montant: t.montant,
-      });
-
-      // Ajoute au snapshot local pour détecter les doublons intra-batch
-      localExpenses.push({
-        rowIndex: -1,
-        categorie,
-        date: new Date(t.date + 'T00:00:00Z'),
-        enseigne: t.enseigne,
-        designation: t.designation || '',
-        montant: Number(t.montant),
       });
       ok++;
     } catch (err) {
@@ -542,10 +519,7 @@ async function askCategory(ctx, key, refs) {
     Markup.button.callback(c, `cat_${key}_${c}`)
   );
   const rows = chunkRows(buttons, 2);
-  rows.push([
-    Markup.button.callback('✨ Nouvelle', `catnew_${key}`),
-    Markup.button.callback('❌ Annuler', `cancel_${key}`),
-  ]);
+  rows.push([Markup.button.callback('❌ Annuler', `cancel_${key}`)]);
 
   const s = sessions.get(key);
   const detected = s.data.categorie
@@ -555,18 +529,6 @@ async function askCategory(ctx, key, refs) {
     parse_mode: 'HTML',
     ...Markup.inlineKeyboard(rows),
   });
-}
-
-export async function handleCategoryNew(ctx) {
-  const key = ctx.match[1];
-  const s = sessions.get(key);
-  if (!s) return ctx.answerCbQuery('Session expirée.');
-
-  s.awaitingTextFor = 'new_categorie';
-  setSession(key, s);
-  await ctx.answerCbQuery();
-  await ctx.editMessageReplyMarkup(null).catch(() => {});
-  await ctx.reply('✏️ Saisis le nom de la nouvelle catégorie :');
 }
 
 async function askEnseigne(ctx, key, refs) {
@@ -916,23 +878,6 @@ export async function handleText(ctx) {
 
   const { key, session } = active;
   const text = ctx.message.text.trim();
-
-  if (session.awaitingTextFor === 'new_categorie') {
-    try {
-      const { name } = await addCategorie(text);
-      session.data.categorie = name;
-      session.data.categorie_confidence = 'high';
-      // Force la sélection d'enseigne (la nouvelle catégorie est vide)
-      session.data.enseigne_in_list = false;
-      session.awaitingTextFor = null;
-      setSession(key, session);
-      await ctx.reply(`✅ Catégorie « ${name} » créée.`);
-      return advance(ctx, key);
-    } catch (err) {
-      console.error('[handleCategoryNew text]', err);
-      return ctx.reply(`❌ ${err.message}\nSaisis un autre nom :`);
-    }
-  }
 
   if (session.awaitingTextFor === 'enseigne') {
     try {
