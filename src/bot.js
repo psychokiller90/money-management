@@ -4,6 +4,8 @@ import { Telegraf } from 'telegraf';
 import {
   handlePhoto,
   handleDocument,
+  handleAjout,
+  handleAjoutDate,
   handleCategory,
   handleEnseigne,
   handleEnseigneNew,
@@ -54,7 +56,8 @@ bot.start((ctx) =>
     '👋 <b>ExpenseBot</b>\n\n' +
       'Envoie-moi une photo de ta facture ou ticket de caisse.\n' +
       "Je l'analyse et l'insère dans ton Google Sheets.\n\n" +
-      'Commandes : /stats /semaine /mois /help',
+      'Tu peux aussi saisir manuellement : /ajout\n\n' +
+      'Commandes : /stats /semaine /mois /ajout /help',
     { parse_mode: 'HTML' }
   )
 );
@@ -64,6 +67,7 @@ bot.help((ctx) =>
     '📖 <b>Guide complet</b>\n\n' +
       '<b>📸 Saisie de dépense</b>\n' +
       '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture\n' +
+      '• /ajout — saisie manuelle (montant → date → catégorie → enseigne → confirmation)\n' +
       '• L\'IA détecte catégorie, enseigne, date, montant, désignation\n' +
       '• Si l\'IA hésite → tu choisis via boutons (option « Nouvelle » dispo)\n' +
       '• Détection automatique des doublons (±2 jours)\n' +
@@ -93,6 +97,7 @@ bot.help((ctx) =>
   )
 );
 
+bot.command('ajout', handleAjout);
 bot.command('stats', handleStats);
 bot.command('semaine', handleSemaine);
 bot.command('mois', handleMois);
@@ -128,6 +133,7 @@ bot.action(/^editfield_([a-z0-9]+)_([a-z]+)$/, handleEditField);
 bot.action(/^batchall_([a-z0-9]+)$/, handleBatchAll);
 bot.action(/^batchseq_([a-z0-9]+)$/, handleBatchSeq);
 bot.action(/^batchincl_([a-z0-9]+)_(retrait|virement)_(yes|no)$/, handleBatchInclude);
+bot.action(/^ajoutdate_([a-z0-9]+)$/, handleAjoutDate);
 
 // Expense callbacks (P4 — /derniere)
 bot.action(/^expmod_([a-z0-9]+)$/, handleExpMod);

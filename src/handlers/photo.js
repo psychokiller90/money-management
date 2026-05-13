@@ -864,6 +864,42 @@ function parseFrenchDate(text) {
   return null;
 }
 
+// ─── /ajout : saisie manuelle ─────────────────────────────────
+export async function handleAjout(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  const userId = ctx.from.id;
+  const key = newKey();
+  setSession(key, {
+    userId,
+    data: {
+      categorie: null,
+      categorie_confidence: 'low',
+      enseigne: null,
+      enseigne_in_list: false,
+      designation: null,
+      date: null,
+      montant: null,
+    },
+    awaitingTextFor: 'manual_montant',
+  });
+  await ctx.reply('➕ <b>Ajout manuel</b>\n\n💶 Saisis le montant en € :', {
+    parse_mode: 'HTML',
+  });
+}
+
+export async function handleAjoutDate(ctx) {
+  const key = ctx.match[1];
+  const s = sessions.get(key);
+  if (!s) return ctx.answerCbQuery('Session expirée.');
+  const today = new Date().toISOString().slice(0, 10);
+  s.data.date = today;
+  s.awaitingTextFor = null;
+  setSession(key, s);
+  await ctx.answerCbQuery();
+  await ctx.editMessageReplyMarkup(null).catch(() => {});
+  return advance(ctx, key);
+}
+
 // ─── Texte libre ──────────────────────────────────────────────
 export async function handleText(ctx) {
   if (ctx.message.text?.startsWith('/')) return;
@@ -939,5 +975,40 @@ export async function handleText(ctx) {
     session.fromEdit = false;
     setSession(key, session);
     return askConfirm(ctx, key);
+  }
+
+  if (session.awaitingTextFor === 'manual_montant') {
+    const n = parseFloat(text.replace(',', '.'));
+    if (!Number.isFinite(n) || n <= 0) {
+      return ctx.reply('❌ Montant invalide. Réessaie (ex: <code>42.50</code>) :', {
+        parse_mode: 'HTML',
+      });
+    }
+    session.data.montant = Math.round(n * 100) / 100;
+    session.awaitingTextFor = 'manual_date';
+    setSession(key, session);
+    const today = new Date().toISOString().slice(0, 10);
+    return ctx.reply(
+      '📅 Saisis la date (<code>JJ/MM/AAAA</code>) ou clique :',
+      {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[
+          Markup.button.callback(`📅 Aujourd'hui (${fmtDate(today)})`, `ajoutdate_${key}`),
+        ]]),
+      }
+    );
+  }
+
+  if (session.awaitingTextFor === 'manual_date') {
+    const iso = parseFrenchDate(text);
+    if (!iso) {
+      return ctx.reply('❌ Date invalide. Format : <code>JJ/MM/AAAA</code>.', {
+        parse_mode: 'HTML',
+      });
+    }
+    session.data.date = iso;
+    session.awaitingTextFor = null;
+    setSession(key, session);
+    return advance(ctx, key);
   }
 }
