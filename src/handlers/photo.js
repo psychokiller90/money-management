@@ -340,8 +340,6 @@ async function showBatchSummary(ctx, userId, transactions, refs) {
 }
 
 // ─── Batch : tout insérer ─────────────────────────────────────
-const FALLBACK_CATEGORY = 'Imprevus';
-
 export async function handleBatchAll(ctx) {
   const key = ctx.match[1];
   const s = sessions.get(key);
@@ -351,37 +349,18 @@ export async function handleBatchAll(ctx) {
 
   // Préchargement du cache dépenses pour que findDuplicate soit rapide
   await listExpenses(true);
-  const refs = await loadReferences();
-  const fallbackCat = refs.categories.includes(FALLBACK_CATEGORY)
-    ? FALLBACK_CATEGORY
-    : refs.categories[0]; // sécurité si Imprevus n'existe pas
 
   const all = [s.data, ...(s.pendingQueue || [])];
   let ok = 0;
-  let forcedFallback = 0;
   const skippedDups = [];
   const errors = [];
 
   for (const t of all) {
     try {
-      if (!t.date || !t.montant || !t.enseigne) {
+      if (!t.date || !t.montant || !t.enseigne || !t.categorie) {
         errors.push(`${t.enseigne || '?'} — données incomplètes`);
         continue;
       }
-
-      // Si la catégorie est manquante / incertaine / hors liste OU enseigne hors liste
-      // → bascule sur la catégorie de fallback (Imprevus)
-      let categorie = t.categorie;
-      const needsFallback =
-        !categorie ||
-        t.categorie_confidence === 'low' ||
-        !refs.categories.includes(categorie) ||
-        t.enseigne_in_list === false;
-      if (needsFallback) {
-        categorie = fallbackCat;
-        forcedFallback++;
-      }
-
       // Détection doublon
       const dup = await findDuplicate({
         date: t.date,
@@ -395,7 +374,7 @@ export async function handleBatchAll(ctx) {
         continue;
       }
       await appendExpense({
-        categorie,
+        categorie: t.categorie,
         date: t.date,
         enseigne: t.enseigne,
         designation: t.designation || '',
@@ -409,9 +388,6 @@ export async function handleBatchAll(ctx) {
   clearSession(key);
 
   const lines = [`✅ <b>${ok}/${all.length} transactions insérées</b>`];
-  if (forcedFallback > 0) {
-    lines.push(`📂 <b>${forcedFallback}</b> classée(s) en <b>${fallbackCat}</b> (vérification suggérée)`);
-  }
   if (skippedDups.length > 0) {
     lines.push('');
     lines.push(`🔁 <b>${skippedDups.length} doublon(s) ignoré(s) :</b>`);
