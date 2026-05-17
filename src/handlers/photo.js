@@ -349,6 +349,13 @@ export async function handleBatchAll(ctx) {
 
   // Préchargement du cache dépenses pour que findDuplicate soit rapide
   await listExpenses(true);
+<<<<<<< HEAD
+=======
+  const refs = await loadReferences();
+  const fallbackCat = refs.categories.includes(FALLBACK_CATEGORY)
+    ? FALLBACK_CATEGORY
+    : refs.categories[0]; // sécurité si Imprevus n'existe pas
+>>>>>>> parent of c967c73 (Add duplicate management and category auto-update)
 
   const all = [s.data, ...(s.pendingQueue || [])];
   let ok = 0;
@@ -361,6 +368,23 @@ export async function handleBatchAll(ctx) {
         errors.push(`${t.enseigne || '?'} — données incomplètes`);
         continue;
       }
+<<<<<<< HEAD
+=======
+
+      // Si la catégorie est manquante / incertaine / hors liste OU enseigne hors liste
+      // → bascule sur la catégorie de fallback (Imprevus)
+      let categorie = t.categorie;
+      const needsFallback =
+        !categorie ||
+        t.categorie_confidence === 'low' ||
+        !refs.categories.includes(categorie) ||
+        t.enseigne_in_list === false;
+      if (needsFallback) {
+        categorie = fallbackCat;
+        forcedFallback++;
+      }
+
+>>>>>>> parent of c967c73 (Add duplicate management and category auto-update)
       // Détection doublon
       const dup = await findDuplicate({
         date: t.date,
