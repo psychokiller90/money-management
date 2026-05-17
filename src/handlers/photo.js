@@ -471,6 +471,10 @@ async function advance(ctx, key) {
     return askDesignation(ctx, key);
   }
 
+  if (!data.date) {
+    return askDate(ctx, key);
+  }
+
   // Détection de doublon (skippée si l'utilisateur a déjà forcé)
   if (!s.duplicateAcknowledged) {
     const dup = await findDuplicate({
@@ -565,6 +569,24 @@ async function askDesignation(ctx, key) {
       [Markup.button.callback('❌ Annuler', `cancel_${key}`)],
     ]),
   });
+}
+
+async function askDate(ctx, key) {
+  const s = sessions.get(key);
+  if (!s) return;
+  s.awaitingTextFor = 'manual_date';
+  setSession(key, s);
+  const today = new Date().toISOString().slice(0, 10);
+  await ctx.reply(
+    '📅 <b>Date manquante</b>\n\nSaisis-la au format <code>JJ/MM/AAAA</code> ou clique :',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback(`📅 Aujourd'hui (${fmtDate(today)})`, `ajoutdate_${key}`)],
+        [Markup.button.callback('❌ Annuler', `cancel_${key}`)],
+      ]),
+    }
+  );
 }
 
 async function askConfirm(ctx, key) {
