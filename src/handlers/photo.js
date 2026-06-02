@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf';
-import { analyzeInvoice, analyzeInvoicePdf } from '../mistral.js';
+import { analyzeInvoiceImage, analyzeInvoicePdf } from '../mistral.js';
 import {
   appendExpense,
   updateExpense,
@@ -96,13 +96,24 @@ export async function handlePhoto(ctx) {
     const base64 = Buffer.from(buffer).toString('base64');
 
     const refs = await loadReferences();
-    const data = await analyzeInvoice(base64, refs);
-
-    const key = newKey();
-    setSession(key, { userId, data, awaitingTextFor: null });
+    const result = await analyzeInvoiceImage(base64, refs);
+    const transactions = result.transactions || [];
 
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
-    await advance(ctx, key);
+
+    if (transactions.length === 0) {
+      return ctx.reply('ℹ️ Aucune dépense détectée sur cette image.');
+    }
+
+    if (transactions.length === 1) {
+      // Ticket / facture simple → flow habituel
+      const key = newKey();
+      setSession(key, { userId, data: transactions[0], awaitingTextFor: null });
+      return advance(ctx, key);
+    }
+
+    // Capture multi-transactions (appli bancaire, relevé) → flow batch
+    return askSpecialTransactions(ctx, userId, transactions, refs);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
     console.error('[handlePhoto]', err);
@@ -277,7 +288,11 @@ export async function handleBatchInclude(ctx) {
 // ─── Résumé batch ─────────────────────────────────────────────
 function fmtDateShort(isoDate) {
   if (!isoDate) return '—';
-  const [, m, d] = isoDate.split('-');
+  // Accepte aussi un objet Date (ex: dup.date renvoyé par listExpenses)
+  if (isoDate instanceof Date) {
+    return `${String(isoDate.getUTCDate()).padStart(2, '0')}/${String(isoDate.getUTCMonth() + 1).padStart(2, '0')}`;
+  }
+  const [, m, d] = String(isoDate).split('-');
   return `${d}/${m}`;
 }
 

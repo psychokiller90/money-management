@@ -119,9 +119,41 @@ function parseJSON(raw) {
     return JSON.parse(raw.trim());
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        /* JSON multiple/malformé → on laisse remonter une erreur claire */
+      }
+    }
     throw new Error(`Réponse IA non parseable : ${raw}`);
   }
+}
+
+/**
+ * Analyse une image pouvant contenir PLUSIEURS transactions (capture d'appli
+ * bancaire, relevé photographié). Utilise le prompt multi + récupération
+ * partielle. Retourne toujours { is_statement, transactions[] }.
+ */
+export async function analyzeInvoiceImage(base64Image, refs, mimeType = 'image/jpeg') {
+  const response = await client.chat.complete({
+    model: 'pixtral-12b-2409',
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image_url',
+            imageUrl: { url: `data:${mimeType};base64,${base64Image}` },
+          },
+          { type: 'text', text: buildMultiPrompt(refs) },
+        ],
+      },
+    ],
+    maxTokens: 2000,
+  });
+  return parseMultiJSON(response.choices[0].message.content);
 }
 
 /**
