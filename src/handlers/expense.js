@@ -193,6 +193,111 @@ export async function handleExpCancel(ctx) {
   await ctx.reply('🚫 Annulé.');
 }
 
+// ─── Helper liste de dépenses avec boutons ✏️/🗑️ ─────────────
+const PAGE_SIZE = 15;
+
+async function sendExpenseList(ctx, expenses, title) {
+  if (expenses.length === 0) {
+    return ctx.reply(`📋 <b>${title}</b>\n\nAucune dépense sur cette période.`, {
+      parse_mode: 'HTML',
+    });
+  }
+
+  const sorted = [...expenses]
+    .filter((e) => e.date)
+    .sort((a, b) => b.date.getTime() - a.date.getTime() || b.rowIndex - a.rowIndex);
+
+  const total = sorted.reduce((s, e) => s + e.montant, 0);
+  const shown = sorted.slice(0, PAGE_SIZE);
+  const rest = sorted.length - shown.length;
+
+  const lines = [
+    `📋 <b>${title}</b>`,
+    `💶 ${shown.length === sorted.length ? sorted.length : `${shown.length}/${sorted.length}`} dépense${sorted.length > 1 ? 's' : ''} — <b>${fmtAmount(total)}</b>\n`,
+  ];
+  const buttonRows = [];
+
+  shown.forEach((e, i) => {
+    const idx = i + 1;
+    lines.push(formatExpenseLine(idx, e));
+    lines.push('');
+    const key = newKey();
+    setSession(key, { userId: ctx.from.id, rowIndex: e.rowIndex, expense: e });
+    buttonRows.push([
+      Markup.button.callback(`✏️ #${idx}`, `expmod_${key}`),
+      Markup.button.callback(`🗑️ #${idx}`, `expdel_${key}`),
+    ]);
+  });
+
+  if (rest > 0) {
+    lines.push(`<i>… ${rest} autre${rest > 1 ? 's' : ''} non affichée${rest > 1 ? 's' : ''}. Utilise /cherche pour filtrer.</i>`);
+  }
+
+  await ctx.reply(lines.join('\n').trim(), {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard(buttonRows),
+  });
+}
+
+// ─── /jour : dépenses du jour ──────────────────────────────────
+export async function handleJour(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  try {
+    const all = await listExpenses(true);
+    const now = new Date();
+    const todayStr = now.toISOString().slice(0, 10);
+    const expenses = all.filter(
+      (e) => e.date && e.date.toISOString().slice(0, 10) === todayStr
+    );
+    const label = `Aujourd'hui — ${String(now.getUTCDate()).padStart(2, '0')}/${String(now.getUTCMonth() + 1).padStart(2, '0')}/${now.getUTCFullYear()}`;
+    await sendExpenseList(ctx, expenses, label);
+  } catch (err) {
+    console.error('[handleJour]', err);
+    await ctx.reply(`❌ Erreur : ${err.message}`);
+  }
+}
+
+// ─── /semaine : 7 derniers jours ───────────────────────────────
+export async function handleSemaine(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  try {
+    const all = await listExpenses(true);
+    const end = new Date();
+    const start = new Date(end.getTime() - 7 * 86400 * 1000);
+    const expenses = all.filter((e) => e.date && e.date >= start && e.date <= end);
+    await sendExpenseList(ctx, expenses, '7 derniers jours');
+  } catch (err) {
+    console.error('[handleSemaine]', err);
+    await ctx.reply(`❌ Erreur : ${err.message}`);
+  }
+}
+
+// ─── /mois [YYYY-MM] : dépenses du mois ────────────────────────
+export async function handleMois(ctx) {
+  if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
+  try {
+    const arg = (ctx.message.text || '').split(' ')[1];
+    let year, month0;
+    if (arg && /^\d{4}-\d{2}$/.test(arg)) {
+      [year, month0] = arg.split('-').map(Number);
+      month0 -= 1;
+    } else {
+      const now = new Date();
+      year = now.getUTCFullYear();
+      month0 = now.getUTCMonth();
+    }
+    const start = new Date(Date.UTC(year, month0, 1));
+    const end = new Date(Date.UTC(year, month0 + 1, 1));
+    const all = await listExpenses(true);
+    const expenses = all.filter((e) => e.date && e.date >= start && e.date < end);
+    const MOIS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+    await sendExpenseList(ctx, expenses, `${MOIS[month0]} ${year}`);
+  } catch (err) {
+    console.error('[handleMois]', err);
+    await ctx.reply(`❌ Erreur : ${err.message}`);
+  }
+}
+
 // ─── /graph : camembert mensuel via QuickChart ───────────────
 const COLORS = [
   '#4F46E5', '#06B6D4', '#10B981', '#F59E0B', '#EF4444',

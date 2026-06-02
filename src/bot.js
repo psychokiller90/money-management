@@ -21,11 +21,14 @@ import {
   handleBatchInclude,
   handleText,
 } from './handlers/photo.js';
-import { handleStats, handleSemaine, handleMois } from './handlers/stats.js';
+import { handleStats } from './handlers/stats.js';
 import {
   handleDerniere,
   handleCherche,
   handleGraph,
+  handleJour,
+  handleSemaine,
+  handleMois,
   handleExpDel,
   handleExpDelConfirm,
   handleExpMod,
@@ -99,6 +102,9 @@ bot.help((ctx) =>
 
 bot.command('ajout', handleAjout);
 bot.command('stats', handleStats);
+
+// ── Consultation par période ────────────────────────────────
+bot.command('jour', handleJour);
 bot.command('semaine', handleSemaine);
 bot.command('mois', handleMois);
 
