@@ -931,6 +931,20 @@ function parseExpenseLine(line, refs) {
   };
 }
 
+// Construit l'objet transaction (forme attendue par advance/handleConfirm)
+function toTransaction(p) {
+  return {
+    categorie: p.categorie,
+    categorie_confidence: 'high',
+    enseigne: p.enseigne,
+    enseigne_in_list: p.enseigneKnown,
+    enseigne_confidence: p.enseigneKnown ? 'high' : 'low',
+    designation: '',
+    date: p.date,
+    montant: p.montant,
+  };
+}
+
 // ─── /ajout : saisie manuelle (interactive, une-ligne ou masse) ──
 export async function handleAjout(ctx) {
   if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
@@ -940,11 +954,45 @@ export async function handleAjout(ctx) {
   const raw = (ctx.message.text || '').replace(/^\/ajout(@\w+)?\s*/i, '');
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
 
-  if (lines.length > 0) {
-    return handleAjoutRapide(ctx, lines);
+  // Aucun argument → flow interactif classique
+  if (lines.length === 0) {
+    return startInteractiveAjout(ctx, userId);
   }
 
-  // Sinon → flow interactif classique
+  const refs = await loadReferences();
+  const valid = [];
+  const invalid = [];
+  lines.forEach((line, i) => {
+    const parsed = parseExpenseLine(line, refs);
+    if (parsed.error) invalid.push({ line: i + 1, text: line, error: parsed.error });
+    else valid.push(toTransaction(parsed));
+  });
+
+  // Cas 1 — une seule ligne, valide : confirmation directe via advance()
+  if (lines.length === 1 && valid.length === 1) {
+    const key = newKey();
+    setSession(key, { userId, data: valid[0], awaitingTextFor: null });
+    await listExpenses(true); // précharge le cache pour la détection de doublon
+    return advance(ctx, key);
+  }
+
+  // Cas 1b — une seule ligne, invalide
+  if (lines.length === 1 && valid.length === 0) {
+    return ctx.reply(
+      `❌ <b>Ligne invalide :</b> ${invalid[0].error}\n\n` +
+        'Format : <code>/ajout montant enseigne catégorie [JJ/MM/AAAA]</code>\n' +
+        'Ex : <code>/ajout 38.95 Leclerc Courses 12/05/2026</code>\n\n' +
+        'Ou utilise <code>/ajout</code> seul pour le mode guidé.',
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  // Cas 2 — saisie en masse : récap groupé
+  return showAjoutBatchRecap(ctx, userId, valid, invalid);
+}
+
+// Démarre le flow interactif classique (montant → date → catégorie → ...)
+async function startInteractiveAjout(ctx, userId) {
   const key = newKey();
   setSession(key, {
     userId,
@@ -968,64 +1016,60 @@ export async function handleAjout(ctx) {
   );
 }
 
-// ─── Ajout rapide : une ou plusieurs lignes parsées d'un coup ──
-async function handleAjoutRapide(ctx, lines) {
-  const refs = await loadReferences();
+// ─── Saisie en masse : récap + boutons Tout insérer / Revoir ──
+async function showAjoutBatchRecap(ctx, userId, valid, invalid) {
+  const lines = [];
 
-  const inserted = [];
-  const errors = [];
-  const newEnseignes = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const parsed = parseExpenseLine(lines[i], refs);
-    if (parsed.error) {
-      errors.push(`L${i + 1} : ${parsed.error}`);
-      continue;
-    }
-    try {
-      await appendExpense({
-        categorie: parsed.categorie,
-        date: parsed.date,
-        enseigne: parsed.enseigne,
-        designation: '',
-        montant: parsed.montant,
-      });
-      inserted.push(parsed);
-
-      // Auto-ajout de l'enseigne à la liste si inconnue (best effort)
-      if (!parsed.enseigneKnown) {
-        try {
-          await addEnseigne(parsed.categorie, parsed.enseigne);
-          newEnseignes.push(`${parsed.enseigne} (${parsed.categorie})`);
-        } catch {
-          /* déjà présente ou colonne pleine — on ignore */
-        }
-      }
-    } catch (err) {
-      console.error('[handleAjoutRapide]', err);
-      errors.push(`L${i + 1} : ${err.message}`);
-    }
-  }
-
-  const out = [];
-  if (inserted.length > 0) {
-    const total = inserted.reduce((s, e) => s + e.montant, 0);
-    out.push(
-      `✅ <b>${inserted.length} dépense${inserted.length > 1 ? 's' : ''} ajoutée${inserted.length > 1 ? 's' : ''}</b> — ${total.toFixed(2).replace('.', ',')} €\n`
+  if (valid.length > 0) {
+    const total = valid.reduce((s, t) => s + t.montant, 0);
+    lines.push(
+      `📥 <b>${valid.length} dépense${valid.length > 1 ? 's' : ''} valide${valid.length > 1 ? 's' : ''}</b> — ${fmtAmountShort(total)}\n`
     );
-    inserted.forEach((e) => {
-      out.push(`• ${fmtDate(e.date)} — ${e.enseigne} — ${e.montant.toFixed(2).replace('.', ',')} € <i>(${e.categorie})</i>`);
+    valid.slice(0, 15).forEach((t) => {
+      const flag = t.enseigne_in_list ? '' : ' 🆕';
+      lines.push(
+        `• ${fmtDateShort(t.date)} — ${t.enseigne} — ${fmtAmountShort(t.montant)} <i>(${t.categorie})</i>${flag}`
+      );
     });
-  }
-  if (newEnseignes.length > 0) {
-    out.push(`\n🆕 Nouvelle${newEnseignes.length > 1 ? 's' : ''} enseigne${newEnseignes.length > 1 ? 's' : ''} : ${newEnseignes.join(', ')}`);
-  }
-  if (errors.length > 0) {
-    out.push(`\n⚠️ <b>${errors.length} ligne${errors.length > 1 ? 's' : ''} ignorée${errors.length > 1 ? 's' : ''} :</b>`);
-    errors.forEach((e) => out.push(`• ${e}`));
+    if (valid.length > 15) lines.push(`<i>… et ${valid.length - 15} autre(s)</i>`);
   }
 
-  await ctx.reply(out.join('\n'), { parse_mode: 'HTML' });
+  if (invalid.length > 0) {
+    lines.push('');
+    lines.push(`⚠️ <b>${invalid.length} ligne${invalid.length > 1 ? 's' : ''} invalide${invalid.length > 1 ? 's' : ''} :</b>`);
+    invalid.forEach((iv) => lines.push(`• L${iv.line} « ${iv.text} » → ${iv.error}`));
+  }
+
+  // Aucune ligne valide → pas de boutons d'insertion
+  if (valid.length === 0) {
+    lines.push('');
+    lines.push('Corrige le format ou utilise <code>/ajout</code> seul pour le mode guidé.');
+    return ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+  }
+
+  const batchKey = newKey();
+  setSession(batchKey, {
+    userId,
+    data: valid[0],
+    awaitingTextFor: null,
+    pendingQueue: valid.slice(1),
+    batchTotal: valid.length,
+    batchDone: 0,
+  });
+
+  if (invalid.length > 0) {
+    lines.push('');
+    lines.push('<i>Les lignes invalides seront ignorées. Tu peux les corriger et renvoyer un /ajout.</i>');
+  }
+
+  await ctx.reply(lines.join('\n'), {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback(`✅ Tout insérer (${valid.length})`, `batchall_${batchKey}`)],
+      [Markup.button.callback('🔎 Revoir une par une', `batchseq_${batchKey}`)],
+      [Markup.button.callback('❌ Annuler', `cancel_${batchKey}`)],
+    ]),
+  });
 }
 
 export async function handleAjoutDate(ctx) {
