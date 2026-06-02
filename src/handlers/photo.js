@@ -862,10 +862,89 @@ function parseFrenchDate(text) {
   return null;
 }
 
-// ─── /ajout : saisie manuelle ─────────────────────────────────
+// ─── Parsing rapide d'une ligne « montant enseigne catégorie [date] » ──
+function normalizeStr(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Parse une ligne du type : "38.95 Leclerc Courses 12/05/2026"
+ * Ordre : montant (1er), date (dernier si format date — sinon aujourd'hui),
+ * catégorie (token qui matche une catégorie connue), enseigne (le reste).
+ * @returns {{montant,enseigne,categorie,date} | {error}}
+ */
+function parseExpenseLine(line, refs) {
+  const tokens = line.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) {
+    return { error: 'format attendu : <code>montant enseigne catégorie [date]</code>' };
+  }
+
+  const montant = parseFloat(tokens[0].replace(',', '.'));
+  if (!Number.isFinite(montant) || montant <= 0) {
+    return { error: `montant invalide « ${tokens[0]} »` };
+  }
+
+  let rest = tokens.slice(1);
+
+  // Date = dernier token si format reconnu, sinon aujourd'hui
+  let date = parseFrenchDate(rest[rest.length - 1]);
+  if (date) {
+    rest = rest.slice(0, -1);
+  } else {
+    date = new Date().toISOString().slice(0, 10);
+  }
+
+  if (rest.length < 2) {
+    return { error: 'enseigne et catégorie requises' };
+  }
+
+  // Catégorie = token qui matche une catégorie connue (insensible casse/accents)
+  const catIdx = rest.findIndex((t) =>
+    refs.categories.some((c) => normalizeStr(c) === normalizeStr(t))
+  );
+  if (catIdx < 0) {
+    return { error: `catégorie introuvable (attendu : ${refs.categories.join(', ')})` };
+  }
+  const categorie = refs.categories.find(
+    (c) => normalizeStr(c) === normalizeStr(rest[catIdx])
+  );
+  rest = [...rest.slice(0, catIdx), ...rest.slice(catIdx + 1)];
+
+  const enseigneRaw = rest.join(' ').trim();
+  if (!enseigneRaw) return { error: 'enseigne manquante' };
+
+  // Si l'enseigne matche une enseigne connue → utilise le nom canonique
+  const known = (refs.enseignes[categorie] || []).find(
+    (e) => normalizeStr(e) === normalizeStr(enseigneRaw)
+  );
+
+  return {
+    montant: Math.round(montant * 100) / 100,
+    enseigne: known || enseigneRaw,
+    enseigneKnown: Boolean(known),
+    categorie,
+    date,
+  };
+}
+
+// ─── /ajout : saisie manuelle (interactive, une-ligne ou masse) ──
 export async function handleAjout(ctx) {
   if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
   const userId = ctx.from.id;
+
+  // Args après /ajout (une ou plusieurs lignes) → parsing rapide
+  const raw = (ctx.message.text || '').replace(/^\/ajout(@\w+)?\s*/i, '');
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  if (lines.length > 0) {
+    return handleAjoutRapide(ctx, lines);
+  }
+
+  // Sinon → flow interactif classique
   const key = newKey();
   setSession(key, {
     userId,
@@ -880,9 +959,73 @@ export async function handleAjout(ctx) {
     },
     awaitingTextFor: 'manual_montant',
   });
-  await ctx.reply('➕ <b>Ajout manuel</b>\n\n💶 Saisis le montant en € :', {
-    parse_mode: 'HTML',
-  });
+  await ctx.reply(
+    '➕ <b>Ajout manuel</b>\n\n💶 Saisis le montant en € :\n\n' +
+      '<i>💡 Astuce : tu peux aussi tout saisir d\'un coup :\n' +
+      '<code>/ajout 38.95 Leclerc Courses 12/05/2026</code>\n' +
+      'ou plusieurs lignes à la fois.</i>',
+    { parse_mode: 'HTML' }
+  );
+}
+
+// ─── Ajout rapide : une ou plusieurs lignes parsées d'un coup ──
+async function handleAjoutRapide(ctx, lines) {
+  const refs = await loadReferences();
+
+  const inserted = [];
+  const errors = [];
+  const newEnseignes = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const parsed = parseExpenseLine(lines[i], refs);
+    if (parsed.error) {
+      errors.push(`L${i + 1} : ${parsed.error}`);
+      continue;
+    }
+    try {
+      await appendExpense({
+        categorie: parsed.categorie,
+        date: parsed.date,
+        enseigne: parsed.enseigne,
+        designation: '',
+        montant: parsed.montant,
+      });
+      inserted.push(parsed);
+
+      // Auto-ajout de l'enseigne à la liste si inconnue (best effort)
+      if (!parsed.enseigneKnown) {
+        try {
+          await addEnseigne(parsed.categorie, parsed.enseigne);
+          newEnseignes.push(`${parsed.enseigne} (${parsed.categorie})`);
+        } catch {
+          /* déjà présente ou colonne pleine — on ignore */
+        }
+      }
+    } catch (err) {
+      console.error('[handleAjoutRapide]', err);
+      errors.push(`L${i + 1} : ${err.message}`);
+    }
+  }
+
+  const out = [];
+  if (inserted.length > 0) {
+    const total = inserted.reduce((s, e) => s + e.montant, 0);
+    out.push(
+      `✅ <b>${inserted.length} dépense${inserted.length > 1 ? 's' : ''} ajoutée${inserted.length > 1 ? 's' : ''}</b> — ${total.toFixed(2).replace('.', ',')} €\n`
+    );
+    inserted.forEach((e) => {
+      out.push(`• ${fmtDate(e.date)} — ${e.enseigne} — ${e.montant.toFixed(2).replace('.', ',')} € <i>(${e.categorie})</i>`);
+    });
+  }
+  if (newEnseignes.length > 0) {
+    out.push(`\n🆕 Nouvelle${newEnseignes.length > 1 ? 's' : ''} enseigne${newEnseignes.length > 1 ? 's' : ''} : ${newEnseignes.join(', ')}`);
+  }
+  if (errors.length > 0) {
+    out.push(`\n⚠️ <b>${errors.length} ligne${errors.length > 1 ? 's' : ''} ignorée${errors.length > 1 ? 's' : ''} :</b>`);
+    errors.forEach((e) => out.push(`• ${e}`));
+  }
+
+  await ctx.reply(out.join('\n'), { parse_mode: 'HTML' });
 }
 
 export async function handleAjoutDate(ctx) {

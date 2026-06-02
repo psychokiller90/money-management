@@ -59,8 +59,8 @@ bot.start((ctx) =>
     '👋 <b>ExpenseBot</b>\n\n' +
       'Envoie-moi une photo de ta facture ou ticket de caisse.\n' +
       "Je l'analyse et l'insère dans ton Google Sheets.\n\n" +
-      'Tu peux aussi saisir manuellement : /ajout\n\n' +
-      'Commandes : /stats /semaine /mois /ajout /help',
+      'Saisie rapide : <code>/ajout 38.95 Leclerc Courses</code>\n\n' +
+      'Commandes : /jour /semaine /mois /ajout /help',
     { parse_mode: 'HTML' }
   )
 );
@@ -69,33 +69,32 @@ bot.help((ctx) =>
   ctx.reply(
     '📖 <b>Guide complet</b>\n\n' +
       '<b>📸 Saisie de dépense</b>\n' +
-      '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture\n' +
-      '• /ajout — saisie manuelle (montant → date → catégorie → enseigne → confirmation)\n' +
+      '• Envoie une <b>photo</b> ou un <b>PDF</b> de facture → analyse IA automatique\n' +
       '• L\'IA détecte catégorie, enseigne, date, montant, désignation\n' +
-      '• Si l\'IA hésite → tu choisis via boutons (option « Nouvelle » dispo)\n' +
       '• Détection automatique des doublons (±2 jours)\n' +
-      '• Avant insertion : ✏️ Modifier ouvre un menu par champ\n' +
-      '• Album de photos → traité individuellement, une carte par facture\n\n' +
-      '<b>📊 Statistiques</b>\n' +
-      '• /stats — vue globale du mois (imprévus, total, objectif, solde) lue depuis l\'onglet « Vue globale »\n' +
-      '• /semaine — résumé des 7 derniers jours (par catégorie + top enseignes)\n' +
-      '• /mois — résumé détaillé du mois en cours\n' +
-      '• /mois <code>YYYY-MM</code> — résumé d\'un mois précis (ex: <code>/mois 2026-04</code>)\n' +
-      '• /graph — camembert des dépenses du mois en cours\n' +
+      '• Album de photos → traité individuellement\n\n' +
+      '<b>✏️ Saisie manuelle</b>\n' +
+      '• /ajout — flow interactif (montant → date → catégorie → enseigne)\n' +
+      '• <b>Saisie rapide</b> : <code>/ajout montant enseigne catégorie [date]</code>\n' +
+      '  Ex : <code>/ajout 38.95 Leclerc Courses 12/05/2026</code>\n' +
+      '  La date est facultative (aujourd\'hui par défaut)\n' +
+      '• <b>Saisie en masse</b> : /ajout suivi de plusieurs lignes\n' +
+      '  <code>/ajout\n38.95 Leclerc Courses\n12.50 Pharmacie Imprevus\n9.90 Netflix Abonnements</code>\n\n' +
+      '<b>📋 Consultation & édition</b>\n' +
+      '• /jour — dépenses d\'aujourd\'hui avec boutons ✏️ / 🗑️\n' +
+      '• /semaine — 7 derniers jours avec boutons ✏️ / 🗑️\n' +
+      '• /mois — mois en cours avec boutons ✏️ / 🗑️\n' +
+      '• /mois <code>YYYY-MM</code> — mois précis (ex : <code>/mois 2026-04</code>)\n' +
+      '• /derniere — 5 dernières dépenses\n' +
+      '• /cherche <code>terme</code> — recherche texte\n\n' +
+      '<b>📊 Graphiques & stats</b>\n' +
+      '• /stats — vue globale du mois (total, objectif épargne, solde)\n' +
+      '• /graph — camembert mensuel\n' +
       '• /graph <code>YYYY-MM</code> — camembert d\'un mois précis\n\n' +
-      '<b>🔎 Recherche & édition</b>\n' +
-      '• /derniere — 5 dernières dépenses avec boutons ✏️ / 🗑️\n' +
-      '• /cherche <code>terme</code> — recherche dans enseigne/catégorie/désignation\n\n' +
       '<b>🏷️ Gestion des listes</b>\n' +
-      '• /categories — affiche toutes les catégories et leurs enseignes\n' +
-      '• /addcategorie — crée une nouvelle catégorie (+ plage nommée auto)\n' +
-      '• /delcategorie — supprime une catégorie (+ plage nommée)\n' +
-      '• /renamecategorie — renomme une catégorie\n' +
-      '• /addenseigne — ajoute une enseigne dans une catégorie\n' +
-      '• /delenseigne — supprime une enseigne\n' +
-      '• /renameenseigne — renomme une enseigne\n\n' +
-      '<b>ℹ️ Sheet</b>\n' +
-      'Colonnes : Catégorie | Date | Type/Enseigne | Désignation | Montant',
+      '• /categories — liste catégories et enseignes\n' +
+      '• /addcategorie · /delcategorie · /renamecategorie\n' +
+      '• /addenseigne · /delenseigne · /renameenseigne',
     { parse_mode: 'HTML' }
   )
 );
