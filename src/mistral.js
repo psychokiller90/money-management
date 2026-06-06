@@ -10,6 +10,39 @@ Les confidences (categorie_confidence, enseigne_confidence) doivent refléter ta
 - "medium" si tu hésites entre 2 options
 - "low" si l'image est floue ou les indices ambigus`;
 
+const ASSISTANT_SYSTEM_PROMPT = `Tu es l'assistant financier personnel de l'utilisateur (gestion de budget perso, en euros).
+Tu réponds en français, de façon concise et chaleureuse, en t'appuyant sur ses dépenses réelles fournies dans le contexte.
+
+Règles :
+- Base TOUS tes chiffres uniquement sur les données fournies. N'invente jamais de montant ou de dépense.
+- Pour un calcul, appuie-toi en priorité sur les agrégats fournis ; sinon additionne soigneusement les lignes pertinentes.
+- Tu peux donner des conseils budgétaires généraux et de bon sens (épargne, postes à réduire, etc.).
+- Si la question n'a AUCUN lien avec l'argent, le budget ou les finances personnelles, rappelle gentiment que tu es l'assistant budgétaire et invite à reformuler.
+- Formate les montants en euros (ex : 38,95 €). Reste bref (2 à 6 phrases) sauf si on demande explicitement un détail ligne par ligne.
+- Si les données ne permettent pas de répondre, dis-le simplement.`;
+
+/**
+ * Assistant conversationnel : répond à une question en langage naturel à partir
+ * du contexte des dépenses (agrégats + détail) fourni par l'appelant.
+ * @param {string} question
+ * @param {string} context  Résumé textuel des dépenses (agrégats + lignes)
+ */
+export async function chatWithAssistant(question, context) {
+  const response = await client.chat.complete({
+    model: 'mistral-small-latest',
+    messages: [
+      { role: 'system', content: ASSISTANT_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: `Voici mes données financières actuelles :\n---\n${context}\n---\n\nMa question : ${question}`,
+      },
+    ],
+    maxTokens: 700,
+    temperature: 0.3,
+  });
+  return response.choices[0].message.content.trim();
+}
+
 function buildCatBlock(refs) {
   const catList = refs.categories.map((c) => `"${c}"`).join(', ');
   const enseignesPerCat = refs.categories

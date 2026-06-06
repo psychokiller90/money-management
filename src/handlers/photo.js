@@ -1,5 +1,5 @@
 import { Markup } from 'telegraf';
-import { analyzeInvoiceImage, analyzeInvoicePdf } from '../mistral.js';
+import { analyzeInvoiceImage, analyzeInvoicePdf, chatWithAssistant } from '../mistral.js';
 import {
   appendExpense,
   updateExpense,
@@ -1126,6 +1126,60 @@ export async function handleAjoutDate(ctx) {
   return advance(ctx, key);
 }
 
+// ─── Assistant conversationnel ────────────────────────────────
+// Construit un contexte texte compact : agrégats par mois/catégorie + détail.
+function buildExpenseContext(expenses) {
+  const today = new Date();
+  const valid = expenses.filter((e) => e.date);
+  const lines = [
+    `Date du jour : ${today.toISOString().slice(0, 10)}`,
+    `Nombre total de dépenses enregistrées : ${valid.length}`,
+  ];
+
+  const byMonthCat = {};
+  let grand = 0;
+  for (const e of valid) {
+    const ym = `${e.date.getUTCFullYear()}-${String(e.date.getUTCMonth() + 1).padStart(2, '0')}`;
+    byMonthCat[ym] = byMonthCat[ym] || {};
+    byMonthCat[ym][e.categorie] = (byMonthCat[ym][e.categorie] || 0) + e.montant;
+    grand += e.montant;
+  }
+  lines.push(`Total cumulé toutes périodes : ${grand.toFixed(2)} €`);
+
+  lines.push('\nTotaux par mois et catégorie :');
+  for (const ym of Object.keys(byMonthCat).sort().reverse()) {
+    const tot = Object.values(byMonthCat[ym]).reduce((s, v) => s + v, 0);
+    const cats = Object.entries(byMonthCat[ym])
+      .sort((a, b) => b[1] - a[1])
+      .map(([c, v]) => `${c} ${v.toFixed(2)}€`)
+      .join(', ');
+    lines.push(`- ${ym} (total ${tot.toFixed(2)}€) : ${cats}`);
+  }
+
+  lines.push('\nDétail (date | catégorie | enseigne | désignation | montant) :');
+  const sorted = [...valid].sort((a, b) => b.date.getTime() - a.date.getTime());
+  for (const e of sorted) {
+    const d = `${String(e.date.getUTCDate()).padStart(2, '0')}/${String(e.date.getUTCMonth() + 1).padStart(2, '0')}/${e.date.getUTCFullYear()}`;
+    lines.push(`${d} | ${e.categorie} | ${e.enseigne} | ${e.designation || '—'} | ${e.montant.toFixed(2)}€`);
+  }
+  return lines.join('\n');
+}
+
+async function handleChatQuery(ctx, question) {
+  const thinking = await ctx.reply('🤖 Je consulte tes dépenses…');
+  try {
+    const expenses = await listExpenses();
+    const context = buildExpenseContext(expenses);
+    const answer = await chatWithAssistant(question, context);
+    await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
+    await ctx.reply(`🤖 ${answer}`);
+  } catch (err) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
+    console.error('[handleChatQuery]', err);
+    await ctx.reply(`❌ Désolé, je n'ai pas pu traiter ta question : ${err.message}`);
+  }
+}
+
 // ─── Texte libre ──────────────────────────────────────────────
 export async function handleText(ctx) {
   if (ctx.message.text?.startsWith('/')) return;
@@ -1136,7 +1190,10 @@ export async function handleText(ctx) {
   if (await tryHandleAdminText(ctx)) return;
 
   const active = getActiveSession(userId);
-  if (!active?.session.awaitingTextFor) return;
+  // Aucun flow texte en cours → question libre à l'assistant financier
+  if (!active?.session.awaitingTextFor) {
+    return handleChatQuery(ctx, ctx.message.text.trim());
+  }
 
   const { key, session } = active;
   const text = ctx.message.text.trim();

@@ -60,6 +60,8 @@ bot.start((ctx) =>
       'Envoie-moi une photo de ta facture ou ticket de caisse.\n' +
       "Je l'analyse et l'insère dans ton Google Sheets.\n\n" +
       'Saisie rapide : <code>/ajout 38.95 Leclerc Courses</code>\n\n' +
+      '💬 Pose-moi aussi tes questions en langage naturel :\n' +
+      '<i>« Combien j\'ai dépensé en courses ce mois-ci ? »</i>\n\n' +
       'Commandes : /jour /semaine /mois /ajout /help',
     { parse_mode: 'HTML' }
   )
@@ -94,7 +96,11 @@ bot.help((ctx) =>
       '<b>🏷️ Gestion des listes</b>\n' +
       '• /categories — liste catégories et enseignes\n' +
       '• /addcategorie · /delcategorie · /renamecategorie\n' +
-      '• /addenseigne · /delenseigne · /renameenseigne',
+      '• /addenseigne · /delenseigne · /renameenseigne\n\n' +
+      '<b>💬 Assistant</b>\n' +
+      'Écris-moi simplement une question sur tes finances :\n' +
+      '<i>« Combien en transport en mai ? », « Ma plus grosse dépense ? »,\n' +
+      '« Où puis-je économiser ? »</i>',
     { parse_mode: 'HTML' }
   )
 );
