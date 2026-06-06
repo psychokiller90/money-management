@@ -424,9 +424,13 @@ export async function handleBatchSeq(ctx) {
   await ctx.answerCbQuery();
   await ctx.editMessageReplyMarkup(null).catch(() => {});
 
+  // Marque le début de la revue séquentielle (Annuler = ignorer, pas tout arrêter)
+  s.seqReview = true;
+  setSession(key, s);
+
   const total = s.batchTotal;
   await ctx.reply(
-    `🔎 Révision une par une — <b>${total} transactions</b>\nChaque transaction sera présentée individuellement.`,
+    `🔎 Révision une par une — <b>${total} transactions</b>\nChaque transaction sera présentée individuellement.\n<i>Annuler = ignorer cette dépense et passer à la suivante.</i>`,
     { parse_mode: 'HTML' }
   );
   await ctx.reply(`<b>1/${total}</b>`, { parse_mode: 'HTML' });
@@ -714,38 +718,16 @@ export async function handleConfirm(ctx) {
       await appendExpense(payload);
     }
 
-    // ── Mode batch séquentiel : passe à la transaction suivante ──
-    if (s.pendingQueue && s.pendingQueue.length > 0) {
-      const nextData = s.pendingQueue.shift();
-      const batchDone = (s.batchDone || 0) + 1;
-      const batchTotal = s.batchTotal || batchDone + s.pendingQueue.length + 1;
-      const nextKey = newKey();
-      setSession(nextKey, {
-        userId: s.userId,
-        data: nextData,
-        awaitingTextFor: null,
-        pendingQueue: s.pendingQueue,
-        batchTotal,
-        batchDone,
-        duplicateAcknowledged: false,
-      });
-      clearSession(key);
-      await ctx.reply(
-        `✅ <b>${batchDone}/${batchTotal}</b> insérée.\n\n➡️ <b>${batchDone + 1}/${batchTotal}</b> :`,
-        { parse_mode: 'HTML' }
-      );
-      return advance(ctx, nextKey);
+    // ── Mode batch séquentiel : insère puis passe à la suivante ──
+    if (s.batchTotal && s.batchTotal > 1 && !s.isExisting) {
+      s.batchDone = (s.batchDone || 0) + 1;
+      await ctx.reply(`✅ <b>Dépense insérée.</b>`, { parse_mode: 'HTML' });
+      return proceedToNextInBatch(ctx, s, key);
     }
 
-    // ── Transaction seule ou dernière de la séquence ──────────────
+    // ── Transaction seule ou édition d'une dépense existante ──────
     const recap = formatRecap(s.data);
-    const wasBatch = s.batchTotal && s.batchTotal > 1;
-    const batchDone = (s.batchDone || 0) + 1;
-    const title = s.isExisting
-      ? 'Dépense mise à jour'
-      : wasBatch
-      ? `✅ ${batchDone}/${s.batchTotal} — Toutes insérées`
-      : 'Dépense enregistrée';
+    const title = s.isExisting ? 'Dépense mise à jour' : 'Dépense enregistrée';
     clearSession(key);
     await ctx.reply(`✅ <b>${title}</b>\n\n${recap}`, { parse_mode: 'HTML' });
   } catch (err) {
@@ -754,11 +736,55 @@ export async function handleConfirm(ctx) {
   }
 }
 
+/**
+ * Passe à la dépense suivante d'un batch séquentiel (après insertion OU saut).
+ * La position est dérivée de pendingQueue, indépendamment du nombre d'insertions.
+ */
+async function proceedToNextInBatch(ctx, s, key) {
+  const batchTotal = s.batchTotal || 0;
+  const batchDone = s.batchDone || 0;
+
+  if (s.pendingQueue && s.pendingQueue.length > 0) {
+    const nextData = s.pendingQueue.shift();
+    const position = batchTotal - s.pendingQueue.length; // index 1-based de nextData
+    const nextKey = newKey();
+    setSession(nextKey, {
+      userId: s.userId,
+      data: nextData,
+      awaitingTextFor: null,
+      pendingQueue: s.pendingQueue,
+      batchTotal,
+      batchDone,
+      seqReview: true,
+      duplicateAcknowledged: false,
+    });
+    clearSession(key);
+    await ctx.reply(`➡️ <b>${position}/${batchTotal}</b> :`, { parse_mode: 'HTML' });
+    return advance(ctx, nextKey);
+  }
+
+  // Plus aucune dépense en attente → fin de la revue
+  clearSession(key);
+  await ctx.reply(
+    `🏁 <b>Revue terminée</b> — ${batchDone}/${batchTotal} dépense(s) insérée(s).`,
+    { parse_mode: 'HTML' }
+  );
+}
+
 export async function handleCancel(ctx) {
   const key = ctx.match[1];
-  clearSession(key);
+  const s = sessions.get(key);
   await ctx.answerCbQuery('Annulé.');
   await ctx.editMessageReplyMarkup(null).catch(() => {});
+
+  // En revue séquentielle : Annuler = ignorer CETTE dépense, continuer la suite
+  if (s && s.seqReview) {
+    await ctx.reply('⏭️ Dépense ignorée.');
+    return proceedToNextInBatch(ctx, s, key);
+  }
+
+  // Écran de résumé batch ou dépense seule : annulation complète
+  clearSession(key);
   await ctx.reply('🚫 Annulé.');
 }
 
