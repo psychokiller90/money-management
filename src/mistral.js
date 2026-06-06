@@ -2,6 +2,21 @@ import { Mistral } from '@mistralai/mistralai';
 
 const client = new Mistral({ apiKey: process.env.MISTRAL_API_KEY });
 
+/**
+ * Transcrit un message vocal (OGG/Opus, MP3, etc.) en texte via Mistral Voxtral.
+ * @param {Buffer} audioBuffer
+ * @param {string} fileName  ex: 'voice.ogg'
+ * @returns {Promise<string>} le texte transcrit
+ */
+export async function transcribeAudio(audioBuffer, fileName = 'voice.ogg') {
+  const response = await client.audio.transcriptions.complete({
+    model: 'voxtral-mini-latest',
+    file: { fileName, content: audioBuffer },
+    language: 'fr',
+  });
+  return (response.text || '').trim();
+}
+
 const SYSTEM_PROMPT = `Tu es un assistant spécialisé dans l'extraction de données de factures et tickets de caisse français.
 Réponds UNIQUEMENT avec un objet JSON valide, sans markdown, sans texte autour.
 Si une information est absente ou illisible, utilise null.
@@ -37,14 +52,15 @@ Catégories valides : ${catList}.
 
 Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
 {
-  "type": "query" | "advice" | "hors_sujet",
+  "type": "query" | "advice" | "hors_sujet" | "ajout",
   "enseigne": string|null,
   "categorie": string|null,
   "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
-  "metric": "sum"|"count"|"list"|"max"|"min"|"average"
+  "metric": "sum"|"count"|"list"|"max"|"min"|"average",
+  "expense": {"montant":number|null,"enseigne":string|null,"categorie":string|null,"date":"YYYY-MM-DD"|null}|null
 }
 
-Règles :
+Règles GÉNÉRALES :
 - "ce mois-ci"/"ce mois" → period.kind="month" avec l'année et le mois du jour.
 - "le mois dernier" → mois précédent (gère le passage d'année).
 - "cette semaine"/"7 derniers jours" → kind="week".
@@ -54,8 +70,18 @@ Règles :
 - Aucune période mentionnée → kind="all".
 - "categorie" = EXACTEMENT une catégorie valide, sinon null. Un commerçant (Leclerc, Burger King, Uber…) va dans "enseigne", JAMAIS dans "categorie".
 - metric : "sum" par défaut ; "count" pour "combien de fois" ; "list" pour "liste/montre/quelles" ; "max" pour "plus grosse/chère" ; "min" pour "plus petite" ; "average" pour "en moyenne".
+
+DISTINCTION IMPORTANTE — interrogation vs déclaration :
+- type="query" si l'utilisateur INTERROGE ses dépenses ("combien j'ai dépensé", "quelle est ma plus grosse dépense", "montre mes achats").
+- type="ajout" si l'utilisateur DÉCLARE une dépense effectuée à enregistrer ("j'ai dépensé 12€ chez X", "ajoute 30€ de courses", "note un paiement de 5€ à la boulangerie", "15,50 chez Leclerc hier").
 - type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
-- type="hors_sujet" si la question n'a aucun rapport avec l'argent / le budget / les finances.
+- type="hors_sujet" si aucun rapport avec l'argent / le budget / les finances.
+
+Pour type="ajout", remplis "expense" :
+- "montant" : le nombre en euros (ex: 12.50). null si non mentionné.
+- "enseigne" : le commerçant/libellé (ex: "Leclerc", "Franprix").
+- "categorie" : une catégorie valide si déductible de l'enseigne, sinon null.
+- "date" : résous "hier", "avant-hier", "le 3 mai", etc. en "YYYY-MM-DD". null si non mentionnée (= aujourd'hui).
 
 Question : ${question}`;
 

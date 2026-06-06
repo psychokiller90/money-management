@@ -20,6 +20,7 @@ import {
   handleBatchSeq,
   handleBatchInclude,
   handleText,
+  handleVoice,
 } from './handlers/photo.js';
 import { handleStats } from './handlers/stats.js';
 import {
@@ -60,8 +61,9 @@ bot.start((ctx) =>
       'Envoie-moi une photo de ta facture ou ticket de caisse.\n' +
       "Je l'analyse et l'insère dans ton Google Sheets.\n\n" +
       'Saisie rapide : <code>/ajout 38.95 Leclerc Courses</code>\n\n' +
-      '💬 Pose-moi aussi tes questions en langage naturel :\n' +
-      '<i>« Combien j\'ai dépensé en courses ce mois-ci ? »</i>\n\n' +
+      '💬 Parle-moi ou écris en langage naturel :\n' +
+      '<i>« Ajoute 12€ chez Franprix » · « Combien en courses ce mois-ci ? »</i>\n' +
+      '🎤 Les messages vocaux fonctionnent aussi !\n\n' +
       'Commandes : /jour /semaine /mois /ajout /help',
     { parse_mode: 'HTML' }
   )
@@ -97,10 +99,12 @@ bot.help((ctx) =>
       '• /categories — liste catégories et enseignes\n' +
       '• /addcategorie · /delcategorie · /renamecategorie\n' +
       '• /addenseigne · /delenseigne · /renameenseigne\n\n' +
-      '<b>💬 Assistant</b>\n' +
-      'Écris-moi simplement une question sur tes finances :\n' +
-      '<i>« Combien en transport en mai ? », « Ma plus grosse dépense ? »,\n' +
-      '« Où puis-je économiser ? »</i>',
+      '<b>💬 Assistant (texte ou 🎤 vocal)</b>\n' +
+      'Parle-moi ou écris naturellement, pour <b>ajouter</b> ou <b>consulter</b> :\n' +
+      '<i>• « Ajoute 12,50€ chez Franprix hier »</i> → enregistre (avec confirmation)\n' +
+      '<i>• « Combien en transport en mai ? »</i> → réponse chiffrée\n' +
+      '<i>• « Ma plus grosse dépense ? », « Où puis-je économiser ? »</i>\n' +
+      '🎤 Un message vocal est transcrit puis traité de la même façon.',
     { parse_mode: 'HTML' }
   )
 );
@@ -127,9 +131,11 @@ bot.command('addcategorie', handleAddCategorie);
 bot.command('delcategorie', handleDelCategorie);
 bot.command('renamecategorie', handleRenameCategorie);
 
-// ── Handlers photo + PDF + callbacks ────────────────────────
+// ── Handlers photo + PDF + vocal + callbacks ────────────────
 bot.on('photo', handlePhoto);
 bot.on('document', handleDocument);
+bot.on('voice', handleVoice);
+bot.on('audio', handleVoice);
 
 bot.action(/^cat_([a-z0-9]+)_(.+)$/, handleCategory);
 bot.action(/^ensnew_([a-z0-9]+)$/, handleEnseigneNew);

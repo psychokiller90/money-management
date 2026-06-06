@@ -4,6 +4,7 @@ import {
   analyzeInvoicePdf,
   chatWithAssistant,
   parseFinancialQuery,
+  transcribeAudio,
 } from '../mistral.js';
 import {
   appendExpense,
@@ -1282,20 +1283,60 @@ function executeFinancialQuery(expenses, q, today) {
   return out;
 }
 
+// Construit l'objet `data` d'une dépense à partir de l'extraction IA,
+// en résolvant catégorie/enseigne contre les références connues.
+function buildAddData(expense, refs, today) {
+  let categorie = expense.categorie
+    ? refs.categories.find((c) => normalizeStr(c) === normalizeStr(expense.categorie)) || null
+    : null;
+
+  let enseigne = expense.enseigne || null;
+  let enseigneKnown = false;
+  if (enseigne) {
+    for (const cat of refs.categories) {
+      const match = (refs.enseignes[cat] || []).find(
+        (e) => normalizeStr(e) === normalizeStr(enseigne)
+      );
+      if (match) {
+        enseigne = match;
+        enseigneKnown = true;
+        if (!categorie) categorie = cat; // déduit la catégorie depuis l'enseigne connue
+        break;
+      }
+    }
+  }
+
+  const montant =
+    typeof expense.montant === 'number' && Number.isFinite(expense.montant)
+      ? Math.round(expense.montant * 100) / 100
+      : null;
+
+  return {
+    categorie,
+    categorie_confidence: categorie ? 'high' : 'low',
+    enseigne,
+    enseigne_in_list: enseigneKnown,
+    enseigne_confidence: enseigneKnown ? 'high' : 'low',
+    designation: '',
+    date: expense.date || today.toISOString().slice(0, 10),
+    montant,
+  };
+}
+
 async function handleChatQuery(ctx, question) {
-  const thinking = await ctx.reply('🤖 Je consulte tes dépenses…');
+  const thinking = await ctx.reply('🤖 Un instant…');
   const finish = async (text) => {
     await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
     await ctx.reply(text, { parse_mode: 'HTML' });
   };
   try {
-    const expenses = await listExpenses();
+    const expenses = await listExpenses(true); // force le rafraîchissement (voir les derniers ajouts)
     const today = new Date();
+    const refs = await loadReferences();
 
-    // 1) L'IA comprend la question → requête structurée
+    // 1) L'IA comprend la demande → structure
     let q = null;
     try {
-      const refs = await loadReferences();
       q = await parseFinancialQuery(question, today.toISOString().slice(0, 10), refs);
     } catch (e) {
       console.warn('[parseFinancialQuery]', e.message);
@@ -1304,22 +1345,69 @@ async function handleChatQuery(ctx, question) {
     // 2) Hors-sujet → recadrage
     if (q?.type === 'hors_sujet') {
       return finish(
-        '🤖 Je suis ton assistant budgétaire 💰 — pose-moi des questions sur tes dépenses ou ta gestion financière.\n\n<i>Ex : « combien en courses ce mois-ci ? », « ma plus grosse dépense de mai ? », « où puis-je économiser ? »</i>'
+        '🤖 Je suis ton assistant budgétaire 💰 — pose-moi des questions sur tes dépenses, ou dicte-moi une dépense à enregistrer.\n\n<i>Ex : « combien en courses ce mois-ci ? » ou « ajoute 12€ chez Franprix ».</i>'
       );
     }
 
-    // 3) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
+    // 3) Déclaration d'une dépense → flow de confirmation (réutilise advance)
+    if (q?.type === 'ajout' && q.expense) {
+      const data = buildAddData(q.expense, refs, today);
+      if (!data.montant || data.montant <= 0) {
+        return finish(
+          "🤖 Je n'ai pas saisi le montant. Reformule, ex : <i>« j'ai dépensé 12,50 € chez Franprix »</i>."
+        );
+      }
+      await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
+      const key = newKey();
+      setSession(key, { userId: ctx.from.id, data, awaitingTextFor: null });
+      return advance(ctx, key); // gère catégorie/enseigne/date manquantes + doublon + confirmation
+    }
+
+    // 4) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
     if (q?.type === 'query') {
       return finish(`🤖 ${executeFinancialQuery(expenses, q, today)}`);
     }
 
-    // 4) Conseil / question ouverte (ou parsing échoué) → LLM avec agrégats
+    // 5) Conseil / question ouverte (ou parsing échoué) → LLM avec agrégats
     const answer = await chatWithAssistant(question, buildExpenseContext(expenses));
     return finish(`🤖 ${answer}`);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
     console.error('[handleChatQuery]', err);
-    await ctx.reply(`❌ Désolé, je n'ai pas pu traiter ta question : ${err.message}`);
+    await ctx.reply(`❌ Désolé, je n'ai pas pu traiter ta demande : ${err.message}`);
+  }
+}
+
+// ─── Handler message vocal ────────────────────────────────────
+export async function handleVoice(ctx) {
+  const userId = ctx.from.id;
+  if (!isAuthorized(userId)) return ctx.reply('⛔ Accès non autorisé.');
+
+  const voice = ctx.message.voice || ctx.message.audio;
+  if (!voice) return;
+
+  const processing = await ctx.reply('🎤 Transcription en cours…');
+  try {
+    const file = await ctx.telegram.getFile(voice.file_id);
+    const fileUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
+    const response = await fetch(fileUrl);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const fileName = (file.file_path || 'voice.ogg').split('/').pop();
+
+    const text = await transcribeAudio(buffer, fileName);
+    await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
+
+    if (!text) {
+      return ctx.reply("🎤 Je n'ai rien compris. Réessaie en parlant clairement.");
+    }
+
+    // Affiche la transcription pour vérification, puis route comme un message texte
+    await ctx.reply(`🎤 <i>« ${text} »</i>`, { parse_mode: 'HTML' });
+    return handleChatQuery(ctx, text);
+  } catch (err) {
+    await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
+    console.error('[handleVoice]', err);
+    await ctx.reply(`❌ Erreur de transcription : ${err.message}`);
   }
 }
 
