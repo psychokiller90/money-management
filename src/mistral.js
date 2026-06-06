@@ -47,7 +47,7 @@ Retourne EXACTEMENT ce JSON :
 
 function buildMultiPrompt(refs) {
   const { catList, enseignesPerCat } = buildCatBlock(refs);
-  return `Analyse ce document financier (relevé bancaire, extrait de compte, ou facture) et extrais TOUTES les lignes de débit.
+  return `Analyse ce document financier et extrais les dépenses.
 
 Catégories disponibles :
 ${catList}
@@ -55,12 +55,18 @@ ${catList}
 Enseignes connues par catégorie :
 ${enseignesPerCat}
 
-Règles :
+RÈGLE LA PLUS IMPORTANTE — combien de transactions ?
+- Un TICKET DE CAISSE, une COMMANDE, ou une FACTURE d'UN SEUL commerçant = UNE SEULE transaction.
+  Le "montant" est le **TOTAL payé** (ex: "TOTAL 5,50 €"), surtout PAS les articles un par un.
+  Les articles (ex: "Baby Churros", "King Sundae") se résument dans "designation", ils ne sont JAMAIS des transactions séparées.
+- Ne crée PLUSIEURS transactions QUE si le document liste plusieurs PAIEMENTS DISTINCTS
+  (commerçants ou dates différents), comme un relevé bancaire ou un historique d'application bancaire.
+
+Autres règles :
 - Ignore les crédits, remboursements, soldes, reports et en-têtes.
-- Pour chaque débit : extrais date, montant (positif), enseigne/libellé, catégorie.
+- Pour chaque dépense : date, montant (positif), enseigne/libellé, catégorie.
 - Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
-- "designation" : résume le libellé en 3-8 mots, ou null si le libellé est déjà l'enseigne.
-- S'il n'y a qu'une seule transaction (facture simple) → tableau à 1 élément.
+- "designation" : résume le contenu en 3-8 mots (ex: "Churros, sundae"), ou null si rien d'utile.
 - Champ "transaction_type" :
   * "retrait" si c'est un retrait d'espèces / DAB / ATM
   * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)
