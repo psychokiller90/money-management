@@ -22,7 +22,54 @@ Règles :
 - Si les données ne permettent pas de répondre, dis-le simplement.`;
 
 /**
- * Assistant conversationnel : répond à une question en langage naturel à partir
+ * Convertit une question en langage naturel en requête structurée JSON.
+ * Le calcul est fait ensuite côté JS (précision garantie) — l'IA ne fait
+ * QUE comprendre l'intention, jamais l'arithmétique.
+ * @param {string} question
+ * @param {string} todayIso  Date du jour 'YYYY-MM-DD'
+ * @param {{categories: string[]}} refs
+ */
+export async function parseFinancialQuery(question, todayIso, refs) {
+  const catList = refs.categories.map((c) => `"${c}"`).join(', ');
+  const prompt = `Tu convertis une question en requête JSON sur des dépenses personnelles.
+Date du jour : ${todayIso}.
+Catégories valides : ${catList}.
+
+Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
+{
+  "type": "query" | "advice" | "hors_sujet",
+  "enseigne": string|null,
+  "categorie": string|null,
+  "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
+  "metric": "sum"|"count"|"list"|"max"|"min"|"average"
+}
+
+Règles :
+- "ce mois-ci"/"ce mois" → period.kind="month" avec l'année et le mois du jour.
+- "le mois dernier" → mois précédent (gère le passage d'année).
+- "cette semaine"/"7 derniers jours" → kind="week".
+- "aujourd'hui"/"hier" → kind="day" (start = la date concernée).
+- "en mai", "avril 2026" → kind="month" (année = année du jour si absente).
+- "cette année"/"en 2026" → kind="range", start="AAAA-01-01", end="AAAA-12-31".
+- Aucune période mentionnée → kind="all".
+- "categorie" = EXACTEMENT une catégorie valide, sinon null. Un commerçant (Leclerc, Burger King, Uber…) va dans "enseigne", JAMAIS dans "categorie".
+- metric : "sum" par défaut ; "count" pour "combien de fois" ; "list" pour "liste/montre/quelles" ; "max" pour "plus grosse/chère" ; "min" pour "plus petite" ; "average" pour "en moyenne".
+- type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
+- type="hors_sujet" si la question n'a aucun rapport avec l'argent / le budget / les finances.
+
+Question : ${question}`;
+
+  const response = await client.chat.complete({
+    model: 'mistral-small-latest',
+    messages: [{ role: 'user', content: prompt }],
+    maxTokens: 300,
+    temperature: 0,
+  });
+  return parseJSON(response.choices[0].message.content);
+}
+
+/**
+ * Assistant conversationnel (conseils / questions ouvertes) : répond à partir
  * du contexte des dépenses (agrégats + détail) fourni par l'appelant.
  * @param {string} question
  * @param {string} context  Résumé textuel des dépenses (agrégats + lignes)

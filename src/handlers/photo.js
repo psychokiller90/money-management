@@ -1,5 +1,10 @@
 import { Markup } from 'telegraf';
-import { analyzeInvoiceImage, analyzeInvoicePdf, chatWithAssistant } from '../mistral.js';
+import {
+  analyzeInvoiceImage,
+  analyzeInvoicePdf,
+  chatWithAssistant,
+  parseFinancialQuery,
+} from '../mistral.js';
 import {
   appendExpense,
   updateExpense,
@@ -1165,14 +1170,152 @@ function buildExpenseContext(expenses) {
   return lines.join('\n');
 }
 
+const MOIS_NOM = [
+  'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
+];
+
+function fullDate(d) {
+  return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+}
+
+// Résout la période d'une requête en intervalle [start, end) + libellé.
+function resolvePeriod(period, today) {
+  if (!period || period.kind === 'all') {
+    return { start: null, end: null, label: 'toutes périodes' };
+  }
+  if (period.kind === 'day') {
+    const base = period.start ? new Date(period.start + 'T00:00:00Z') : today;
+    const start = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()));
+    const end = new Date(start.getTime() + 86400000);
+    return { start, end, label: `le ${fullDate(start)}` };
+  }
+  if (period.kind === 'week') {
+    const end = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()) + 86400000);
+    const start = new Date(end.getTime() - 8 * 86400000);
+    return { start, end, label: '7 derniers jours' };
+  }
+  if (period.kind === 'month') {
+    const y = period.year || today.getUTCFullYear();
+    const m = (period.month || today.getUTCMonth() + 1) - 1;
+    const start = new Date(Date.UTC(y, m, 1));
+    const end = new Date(Date.UTC(y, m + 1, 1));
+    return { start, end, label: `${MOIS_NOM[m]} ${y}` };
+  }
+  if (period.kind === 'range') {
+    const start = period.start ? new Date(period.start + 'T00:00:00Z') : null;
+    const end = period.end ? new Date(new Date(period.end + 'T00:00:00Z').getTime() + 86400000) : null;
+    return { start, end, label: `du ${period.start} au ${period.end}` };
+  }
+  return { start: null, end: null, label: '' };
+}
+
+// Exécute une requête structurée sur les dépenses → réponse texte précise.
+function executeFinancialQuery(expenses, q, today) {
+  const { start, end, label } = resolvePeriod(q.period, today);
+
+  let rows = expenses.filter((e) => e.date);
+  if (start) rows = rows.filter((e) => e.date >= start);
+  if (end) rows = rows.filter((e) => e.date < end);
+  if (q.categorie) {
+    const nc = normalizeStr(q.categorie);
+    rows = rows.filter((e) => normalizeStr(e.categorie) === nc);
+  }
+  if (q.enseigne) {
+    const ne = normalizeStr(q.enseigne);
+    // match exact d'abord, puis "contient" si aucun résultat exact
+    const exact = rows.filter((e) => normalizeStr(e.enseigne) === ne);
+    rows = exact.length > 0 ? exact : rows.filter((e) => normalizeStr(e.enseigne).includes(ne));
+  }
+
+  const scopeParts = [];
+  if (q.enseigne) scopeParts.push(`chez ${q.enseigne}`);
+  if (q.categorie) scopeParts.push(`en ${q.categorie}`);
+  const periodLabel = q.period && q.period.kind !== 'all' ? label : null;
+  const where = [scopeParts.join(' '), periodLabel ? `(${periodLabel})` : '']
+    .filter(Boolean)
+    .join(' ');
+  const whereSuffix = where ? ` ${where}` : '';
+
+  if (rows.length === 0) {
+    return `Aucune dépense${whereSuffix} trouvée.`;
+  }
+
+  const total = rows.reduce((s, e) => s + e.montant, 0);
+  const metric = q.metric || 'sum';
+
+  if (metric === 'count') {
+    return `${rows.length} dépense${rows.length > 1 ? 's' : ''}${whereSuffix} — total ${fmtAmountShort(total)}.`;
+  }
+
+  if (metric === 'max' || metric === 'min') {
+    const ext = rows.reduce((a, b) =>
+      metric === 'max' ? (b.montant > a.montant ? b : a) : (b.montant < a.montant ? b : a)
+    );
+    const sup = metric === 'max' ? 'élevée' : 'faible';
+    return `Ta dépense la plus ${sup}${whereSuffix} : ${fmtAmountShort(ext.montant)} — ${ext.enseigne} (${ext.categorie})${ext.designation ? `, ${ext.designation}` : ''} le ${fullDate(ext.date)}.`;
+  }
+
+  if (metric === 'average') {
+    return `Moyenne${whereSuffix} : ${fmtAmountShort(total / rows.length)} sur ${rows.length} dépense${rows.length > 1 ? 's' : ''} (total ${fmtAmountShort(total)}).`;
+  }
+
+  if (metric === 'list') {
+    const sorted = [...rows].sort((a, b) => b.date.getTime() - a.date.getTime());
+    const shown = sorted.slice(0, 15);
+    const lines = shown.map(
+      (e) => `• ${fullDate(e.date)} — ${e.enseigne} — ${fmtAmountShort(e.montant)} <i>(${e.categorie})</i>`
+    );
+    let out = `${rows.length} dépense${rows.length > 1 ? 's' : ''}${whereSuffix} — total ${fmtAmountShort(total)} :\n${lines.join('\n')}`;
+    if (sorted.length > shown.length) out += `\n<i>… +${sorted.length - shown.length} autres</i>`;
+    return out;
+  }
+
+  // sum (défaut) — avec petite ventilation par catégorie si pertinent
+  let out = `Tu as dépensé <b>${fmtAmountShort(total)}</b>${whereSuffix} (${rows.length} dépense${rows.length > 1 ? 's' : ''}).`;
+  if (!q.categorie && !q.enseigne) {
+    const byCat = {};
+    for (const e of rows) byCat[e.categorie] = (byCat[e.categorie] || 0) + e.montant;
+    const top = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    out += '\n' + top.map(([c, v]) => `• ${c} : ${fmtAmountShort(v)}`).join('\n');
+  }
+  return out;
+}
+
 async function handleChatQuery(ctx, question) {
   const thinking = await ctx.reply('🤖 Je consulte tes dépenses…');
+  const finish = async (text) => {
+    await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
+    await ctx.reply(text, { parse_mode: 'HTML' });
+  };
   try {
     const expenses = await listExpenses();
-    const context = buildExpenseContext(expenses);
-    const answer = await chatWithAssistant(question, context);
-    await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
-    await ctx.reply(`🤖 ${answer}`);
+    const today = new Date();
+
+    // 1) L'IA comprend la question → requête structurée
+    let q = null;
+    try {
+      const refs = await loadReferences();
+      q = await parseFinancialQuery(question, today.toISOString().slice(0, 10), refs);
+    } catch (e) {
+      console.warn('[parseFinancialQuery]', e.message);
+    }
+
+    // 2) Hors-sujet → recadrage
+    if (q?.type === 'hors_sujet') {
+      return finish(
+        '🤖 Je suis ton assistant budgétaire 💰 — pose-moi des questions sur tes dépenses ou ta gestion financière.\n\n<i>Ex : « combien en courses ce mois-ci ? », « ma plus grosse dépense de mai ? », « où puis-je économiser ? »</i>'
+      );
+    }
+
+    // 3) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
+    if (q?.type === 'query') {
+      return finish(`🤖 ${executeFinancialQuery(expenses, q, today)}`);
+    }
+
+    // 4) Conseil / question ouverte (ou parsing échoué) → LLM avec agrégats
+    const answer = await chatWithAssistant(question, buildExpenseContext(expenses));
+    return finish(`🤖 ${answer}`);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, thinking.message_id).catch(() => {});
     console.error('[handleChatQuery]', err);
