@@ -15,6 +15,7 @@ import {
   listExpenses,
 } from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
+import { buildSoldeReport } from './stats.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -1363,12 +1364,17 @@ async function handleChatQuery(ctx, question) {
       return advance(ctx, key); // gère catégorie/enseigne/date manquantes + doublon + confirmation
     }
 
-    // 4) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
+    // 4) Solde restant du mois → lecture "Vue globale"
+    if (q?.type === 'solde') {
+      return finish(`🤖 ${await buildSoldeReport()}`);
+    }
+
+    // 5) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
     if (q?.type === 'query') {
       return finish(`🤖 ${executeFinancialQuery(expenses, q, today)}`);
     }
 
-    // 5) Conseil / question ouverte (ou parsing échoué) → LLM avec agrégats
+    // 6) Conseil / question ouverte (ou parsing échoué) → LLM avec agrégats
     const answer = await chatWithAssistant(question, buildExpenseContext(expenses));
     return finish(`🤖 ${answer}`);
   } catch (err) {

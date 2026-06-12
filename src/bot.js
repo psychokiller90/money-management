@@ -22,7 +22,7 @@ import {
   handleText,
   handleVoice,
 } from './handlers/photo.js';
-import { handleStats } from './handlers/stats.js';
+import { handleStats, handleSolde } from './handlers/stats.js';
 import {
   handleDerniere,
   handleCherche,
@@ -92,6 +92,7 @@ bot.help((ctx) =>
       '• /derniere — 5 dernières dépenses\n' +
       '• /cherche <code>terme</code> — recherche texte\n\n' +
       '<b>📊 Graphiques & stats</b>\n' +
+      '• /solde — 💳 solde restant du mois en cours\n' +
       '• /stats — vue globale du mois (total, objectif épargne, solde)\n' +
       '• /graph — camembert mensuel\n' +
       '• /graph <code>YYYY-MM</code> — camembert d\'un mois précis\n\n' +
@@ -103,6 +104,7 @@ bot.help((ctx) =>
       'Parle-moi ou écris naturellement, pour <b>ajouter</b> ou <b>consulter</b> :\n' +
       '<i>• « Ajoute 12,50€ chez Franprix hier »</i> → enregistre (avec confirmation)\n' +
       '<i>• « Combien en transport en mai ? »</i> → réponse chiffrée\n' +
+      '<i>• « Combien il me reste ce mois-ci ? »</i> → 💳 solde restant\n' +
       '<i>• « Ma plus grosse dépense ? », « Où puis-je économiser ? »</i>\n' +
       '🎤 Un message vocal est transcrit puis traité de la même façon.',
     { parse_mode: 'HTML' }
@@ -111,6 +113,7 @@ bot.help((ctx) =>
 
 bot.command('ajout', handleAjout);
 bot.command('stats', handleStats);
+bot.command('solde', handleSolde);
 
 // ── Consultation par période ────────────────────────────────
 bot.command('jour', handleJour);

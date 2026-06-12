@@ -52,7 +52,7 @@ Catégories valides : ${catList}.
 
 Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
 {
-  "type": "query" | "advice" | "hors_sujet" | "ajout",
+  "type": "query" | "advice" | "hors_sujet" | "ajout" | "solde",
   "enseigne": string|null,
   "categorie": string|null,
   "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
@@ -74,6 +74,7 @@ Règles GÉNÉRALES :
 DISTINCTION IMPORTANTE — interrogation vs déclaration :
 - type="query" si l'utilisateur INTERROGE ses dépenses ("combien j'ai dépensé", "quelle est ma plus grosse dépense", "montre mes achats").
 - type="ajout" si l'utilisateur DÉCLARE une dépense effectuée à enregistrer ("j'ai dépensé 12€ chez X", "ajoute 30€ de courses", "note un paiement de 5€ à la boulangerie", "15,50 chez Leclerc hier").
+- type="solde" si l'utilisateur demande son SOLDE RESTANT / ce qu'il lui reste à dépenser ce mois ("mon solde", "combien il me reste", "solde restant", "il me reste combien ce mois-ci").
 - type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
 - type="hors_sujet" si aucun rapport avec l'argent / le budget / les finances.
 

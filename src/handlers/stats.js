@@ -108,6 +108,39 @@ export async function handleStats(ctx) {
   });
 }
 
+/**
+ * Construit le message du solde restant du mois courant (depuis "Vue globale").
+ * Réutilisé par la commande /solde ET l'assistant (texte/vocal).
+ * @returns {Promise<string>} message HTML prêt à envoyer (sans préfixe 🤖)
+ */
+export async function buildSoldeReport() {
+  const v = await loadGlobalView();
+  const fmt = (x) => (x !== null && x !== undefined && String(x).trim() !== '' ? x : '—');
+  const now = new Date();
+  const moisAnnee = `${MOIS_FR[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+
+  if (!v.monthFound) {
+    return (
+      `💳 <b>Solde restant — ${moisAnnee}</b>\n` +
+      `<i>(⚠️ "${moisAnnee}" introuvable dans la Vue globale)</i>\n\n` +
+      `💳 Solde restant : <b>${fmt(v.soldeRestant)}</b>`
+    );
+  }
+  return [
+    `💳 <b>Solde restant — ${moisAnnee}</b>`,
+    '',
+    `💳 Solde restant   : <b>${fmt(v.soldeRestant)}</b>`,
+    `📊 Total dépensé   : ${fmt(v.totalDepenses)}`,
+    `🎯 Objectif épargne : ${fmt(v.objectifEpargne)}`,
+  ].join('\n');
+}
+
+export async function handleSolde(ctx) {
+  await withErrorHandling(ctx, async () => {
+    await ctx.reply(await buildSoldeReport(), { parse_mode: 'HTML' });
+  });
+}
+
 export async function handleSemaine(ctx) {
   await withErrorHandling(ctx, async () => {
     const end = new Date();
