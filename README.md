@@ -52,7 +52,27 @@ cp .env.example .env
 - Onglet **`Dépenses`** avec en ligne 1 : `Catégorie | Date | Type / Enseigne | Désignation | Montant (€)`
 - Onglet **`data`** : colonnes A-E remplies avec les enseignes par catégorie (header en ligne 1 = nom de la catégorie)
 
-### 6. Lancer en local
+### 6. Miroir Neon (optionnel)
+Le Google Sheet reste la **source de vérité**. Si `DATABASE_URL` est définie, le
+bot recopie en plus l'état complet du Sheet dans Postgres après chaque écriture,
+pour pouvoir interroger les dépenses en SQL.
+
+1. Crée un projet sur [neon.tech](https://neon.tech) (région `eu-central-1`)
+2. Exécute `schema.sql` dans le SQL Editor
+3. Renseigne `DATABASE_URL` avec la *pooled connection string*
+4. Import initial de l'historique :
+   ```bash
+   npm run sync-neon
+   ```
+
+Le miroir est volontairement non bloquant : il tourne en tâche de fond et
+n'interrompt jamais une saisie. Si Neon est injoignable, le Sheet est écrit
+normalement et le miroir rattrape l'écart à l'écriture suivante — ou via
+`npm run sync-neon`. Sans `DATABASE_URL`, le bot fonctionne exactement comme
+avant. Les écritures directes dans Postgres sont écrasées au miroir suivant :
+tout se modifie depuis le bot ou le Sheet.
+
+### 7. Lancer en local
 ```bash
 npm run dev
 ```
@@ -86,6 +106,7 @@ npm run dev
 | `MISTRAL_API_KEY` | Clé API Mistral |
 | `GOOGLE_CREDENTIALS_JSON` | JSON service account stringifié |
 | `SPREADSHEET_ID` | ID du fichier Google Sheets |
+| `DATABASE_URL` | Postgres Neon — miroir SQL du Sheet (optionnel) |
 | `REMINDER_DAYS` | Seuil avant rappel (défaut : 3) |
 | `CRON_SECRET` | Secret pour protéger /cron/reminder |
 | `WEBHOOK_URL` | URL publique Render (prod) |
