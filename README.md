@@ -17,6 +17,7 @@ Bot Telegram personnel : photo de facture → analyse Mistral Vision → inserti
 | Bot framework | Telegraf 4 | gratuit |
 | Vision IA | Mistral Pixtral 12B | gratuit (free tier console.mistral.ai) |
 | Persistance | Google Sheets API | gratuit |
+| Miroir SQL | Neon Postgres (optionnel) | gratuit |
 | Hébergement | Render Web Service | gratuit |
 | Cron rappels | cron-job.org ou GitHub Actions | gratuit |
 

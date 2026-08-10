@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import * as db from './db.js';
 
 const DATA_SHEET = 'data';
 const DEPENSES_SHEET = 'Dépenses';
@@ -29,6 +30,24 @@ function getSheetsClient() {
 
 function spreadsheetId() {
   return process.env.SPREADSHEET_ID;
+}
+
+/**
+ * Invalide le cache local puis recopie l'état du Sheet dans Neon.
+ *
+ * Volontairement sans `await` : le miroir ne doit ni ralentir le bot ni le
+ * faire échouer. Si Neon est injoignable, le Sheet a déjà été écrit et le
+ * prochain miroir rattrapera l'écart (resynchronisation complète).
+ */
+function invalider(quoi) {
+  if (quoi === 'depenses') _expensesCache = null;
+  else _refsCache = null;
+
+  if (!db.isEnabled()) return;
+  (async () => {
+    const [expenses, references] = await Promise.all([listExpenses(), loadReferences()]);
+    await db.syncDepuisSheet({ expenses, references, source: `sheet:${quoi}` });
+  })().catch((err) => console.error(`⚠️  Miroir Neon (${quoi}) :`, err.message));
 }
 
 /**
@@ -112,7 +131,7 @@ export async function appendExpense(d) {
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: [row] },
   });
-  _expensesCache = null;
+  invalider('depenses');
   return row;
 }
 
@@ -138,7 +157,7 @@ export async function addEnseigne(categorie, enseigne) {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[enseigne]] },
   });
-  _refsCache = null;
+  invalider('references');
 }
 
 /**
@@ -354,7 +373,7 @@ export async function updateExpense(rowIndex, d) {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [row] },
   });
-  _expensesCache = null;
+  invalider('depenses');
   return row;
 }
 
@@ -383,7 +402,7 @@ export async function deleteExpense(rowIndex) {
       ],
     },
   });
-  _expensesCache = null;
+  invalider('depenses');
 }
 
 /**
@@ -504,7 +523,7 @@ async function rewriteEnseigneColumn(categorie, list) {
       requestBody: { values: list.map((v) => [v]) },
     });
   }
-  _refsCache = null;
+  invalider('references');
 }
 
 /**
@@ -558,7 +577,7 @@ export async function addCategorie(name) {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[trimmed]] },
   });
-  _refsCache = null;
+  invalider('references');
 
   // P6 — auto-création de la plage nommée pour la validation INDIRECT
   let namedRangeOk = true;
@@ -585,7 +604,7 @@ export async function delCategorie(name) {
     spreadsheetId: spreadsheetId(),
     range: `${DATA_SHEET}!${col}1:${col}50`,
   });
-  _refsCache = null;
+  invalider('references');
 
   // P6 — supprime la plage nommée associée
   let namedRangeOk = true;
@@ -627,7 +646,7 @@ export async function renameCategorie(oldName, newName) {
     valueInputOption: 'USER_ENTERED',
     requestBody: { values: [[trimmed]] },
   });
-  _refsCache = null;
+  invalider('references');
 
   // P6 — renomme la plage nommée associée
   let namedRangeOk = true;
