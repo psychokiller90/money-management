@@ -1,4 +1,5 @@
-import { listExpenses } from '../sheets.js';
+import { listExpenses, loadEcheances } from '../sheets.js';
+import { computeEcheanceProgress } from './echeances.js';
 
 const DAY_MS = 86400 * 1000;
 
@@ -36,4 +37,40 @@ export async function checkAndRemind(bot) {
     return { sent: true, ageJours };
   }
   return { sent: false, ageJours };
+}
+
+/**
+ * Vérifie les plans de paiement en plusieurs fois (onglet `Échéances`) et
+ * envoie un rappel Telegram pour chaque échéance non payée dans les 3 jours
+ * (J-3 à J inclus). Appelé par le même cron externe que checkAndRemind.
+ */
+export async function checkEcheances(bot) {
+  const adminId = process.env.TELEGRAM_ADMIN_ID;
+  if (!adminId) return { sent: false, reason: 'no_admin_id' };
+
+  const [plans, expenses] = await Promise.all([loadEcheances(), listExpenses()]);
+  const today = new Date();
+  const todayUTC = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+
+  const dues = [];
+  for (const plan of plans.filter((p) => p.actif)) {
+    const { payees, restantes, prochaine } = computeEcheanceProgress(plan, expenses);
+    if (restantes === 0 || !prochaine) continue;
+    const joursRestants = Math.round((prochaine.getTime() - todayUTC.getTime()) / DAY_MS);
+    if (joursRestants >= 0 && joursRestants <= 3) {
+      dues.push({ plan, numero: payees + 1, joursRestants });
+    }
+  }
+
+  for (const { plan, numero, joursRestants } of dues) {
+    const delaiTxt = joursRestants === 0 ? "aujourd'hui" : `dans ${joursRestants} jour${joursRestants > 1 ? 's' : ''}`;
+    await bot.telegram.sendMessage(
+      adminId,
+      `💳 <b>Échéance ${numero}/${plan.nombreFois} — ${plan.nom}</b>\n\n` +
+        `${plan.montantEcheance.toFixed(2).replace('.', ',')} € à payer ${delaiTxt}.`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  return { sent: dues.length > 0, count: dues.length };
 }

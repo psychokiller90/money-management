@@ -23,6 +23,7 @@ import {
   handleVoice,
 } from './handlers/photo.js';
 import { handleStats, handleSolde } from './handlers/stats.js';
+import { handleEcheances, handleQuantites } from './handlers/echeances.js';
 import {
   handleDerniere,
   handleCherche,
@@ -50,7 +51,7 @@ import {
   handleAdminDelCatConfirm,
   handleAdminCancel,
 } from './handlers/admin.js';
-import { checkAndRemind } from './handlers/reminder.js';
+import { checkAndRemind, checkEcheances } from './handlers/reminder.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -96,6 +97,10 @@ bot.help((ctx) =>
       '• /stats — vue globale du mois (total, objectif épargne, solde)\n' +
       '• /graph — camembert mensuel\n' +
       '• /graph <code>YYYY-MM</code> — camembert d\'un mois précis\n\n' +
+      '<b>💳 Paiements en plusieurs fois & quantités</b>\n' +
+      '• /echeances — suivi des plans de paiement en cours (onglet Échéances)\n' +
+      '• /quantites — quantités de produits achetées ce mois-ci (ex: boîtes de lait, couches)\n' +
+      '• /quantites <code>YYYY-MM</code> — quantités d\'un mois précis\n\n' +
       '<b>🏷️ Gestion des listes</b>\n' +
       '• /categories — liste catégories et enseignes\n' +
       '• /addcategorie · /delcategorie · /renamecategorie\n' +
@@ -105,6 +110,7 @@ bot.help((ctx) =>
       '<i>• « Ajoute 12,50€ chez Franprix hier »</i> → enregistre (avec confirmation)\n' +
       '<i>• « Combien en transport en mai ? »</i> → réponse chiffrée\n' +
       '<i>• « Combien il me reste ce mois-ci ? »</i> → 💳 solde restant\n' +
+      '<i>• « Où j\'en suis sur mes échéances ? »</i> → 💳 paiements en plusieurs fois\n' +
       '<i>• « Ma plus grosse dépense ? », « Où puis-je économiser ? »</i>\n' +
       '🎤 Un message vocal est transcrit puis traité de la même façon.',
     { parse_mode: 'HTML' }
@@ -114,6 +120,8 @@ bot.help((ctx) =>
 bot.command('ajout', handleAjout);
 bot.command('stats', handleStats);
 bot.command('solde', handleSolde);
+bot.command('echeances', handleEcheances);
+bot.command('quantites', handleQuantites);
 
 // ── Consultation par période ────────────────────────────────
 bot.command('jour', handleJour);
@@ -193,9 +201,9 @@ if (isProd) {
         return;
       }
       try {
-        const result = await checkAndRemind(bot);
+        const [rappel, echeances] = await Promise.all([checkAndRemind(bot), checkEcheances(bot)]);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
+        res.end(JSON.stringify({ rappel, echeances }));
       } catch (err) {
         console.error('[cron/reminder]', err);
         res.writeHead(500).end(err.message);

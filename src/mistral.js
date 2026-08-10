@@ -52,12 +52,12 @@ Catégories valides : ${catList}.
 
 Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
 {
-  "type": "query" | "advice" | "hors_sujet" | "ajout" | "solde",
+  "type": "query" | "advice" | "hors_sujet" | "ajout" | "solde" | "echeances",
   "enseigne": string|null,
   "categorie": string|null,
   "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
   "metric": "sum"|"count"|"list"|"max"|"min"|"average",
-  "expense": {"montant":number|null,"enseigne":string|null,"categorie":string|null,"date":"YYYY-MM-DD"|null}|null
+  "expense": {"montant":number|null,"enseigne":string|null,"categorie":string|null,"date":"YYYY-MM-DD"|null,"produits":[{"nom":string,"quantite":number}]}|null
 }
 
 Règles GÉNÉRALES :
@@ -75,6 +75,7 @@ DISTINCTION IMPORTANTE — interrogation vs déclaration :
 - type="query" si l'utilisateur INTERROGE ses dépenses ("combien j'ai dépensé", "quelle est ma plus grosse dépense", "montre mes achats").
 - type="ajout" si l'utilisateur DÉCLARE une dépense effectuée à enregistrer ("j'ai dépensé 12€ chez X", "ajoute 30€ de courses", "note un paiement de 5€ à la boulangerie", "15,50 chez Leclerc hier").
 - type="solde" si l'utilisateur demande son SOLDE RESTANT / ce qu'il lui reste à dépenser ce mois ("mon solde", "combien il me reste", "solde restant", "il me reste combien ce mois-ci").
+- type="echeances" si l'utilisateur interroge ses PAIEMENTS EN PLUSIEURS FOIS / échéances en cours ("mes échéances", "combien de fois il me reste à payer", "où j'en suis sur le canapé", "il me reste combien d'échéances", "mes paiements en 3 fois", "quand est ma prochaine échéance"). Si un achat précis est nommé, mets son nom dans "enseigne" ; sinon "enseigne"=null.
 - type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
 - type="hors_sujet" si aucun rapport avec l'argent / le budget / les finances.
 
@@ -83,6 +84,7 @@ Pour type="ajout", remplis "expense" :
 - "enseigne" : le commerçant/libellé (ex: "Leclerc", "Franprix").
 - "categorie" : une catégorie valide si déductible de l'enseigne, sinon null.
 - "date" : résous "hier", "avant-hier", "le 3 mai", etc. en "YYYY-MM-DD". null si non mentionnée (= aujourd'hui).
+- "produits" : si des articles avec quantités sont cités (ex: "3 boîtes de lait et 2 paquets de couches"), un objet par article distinct. Tableau vide [] sinon.
 
 Question : ${question}`;
 
@@ -139,6 +141,8 @@ Si l'enseigne réelle ne figure dans AUCUNE liste, propose-la quand même et met
 
 Pour la "designation" : résume en 3-8 mots les articles principaux de la facture (ex: "Pain, lait, œufs"). Si rien d'identifiable, mets null.
 
+Pour "produits" : si le ticket liste des articles individuels avec leurs quantités (ex: ticket de pharmacie ou de supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}. Regroupe les articles identiques (ex: 3 boîtes de lait identique → un seul objet avec quantite=3). Si aucun article n'est individuellement identifiable, mets un tableau vide [].
+
 Retourne EXACTEMENT ce JSON :
 {
   "date": "YYYY-MM-DD",
@@ -148,7 +152,8 @@ Retourne EXACTEMENT ce JSON :
   "enseigne": "Leclerc",
   "enseigne_in_list": true,
   "enseigne_confidence": "high",
-  "designation": "Pain, lait, œufs"
+  "designation": "Pain, lait, œufs",
+  "produits": [{"nom": "Lait", "quantite": 3}]
 }`;
 }
 
@@ -174,6 +179,7 @@ Autres règles :
 - Pour chaque dépense : date, montant (positif), enseigne/libellé, catégorie.
 - Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
 - "designation" : résume le contenu en 3-8 mots (ex: "Churros, sundae"), ou null si rien d'utile.
+- "produits" : si le ticket liste des articles individuels avec leurs quantités (pharmacie, supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}, en regroupant les identiques. Tableau vide [] si non applicable (relevé bancaire, article non identifiable...).
 - Champ "transaction_type" :
   * "retrait" si c'est un retrait d'espèces / DAB / ATM
   * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)
@@ -192,7 +198,8 @@ Retourne EXACTEMENT ce JSON :
       "enseigne": "Leclerc",
       "enseigne_in_list": true,
       "enseigne_confidence": "high",
-      "designation": null
+      "designation": null,
+      "produits": []
     }
   ]
 }`;

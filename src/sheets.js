@@ -679,3 +679,159 @@ export async function renameEnseigne(categorie, oldName, newName) {
   }
   await rewriteEnseigneColumn(categorie, next);
 }
+
+// ─── Échéances (paiements en plusieurs fois) ──────────────────
+const ECHEANCES_SHEET = 'Échéances';
+let _echeancesCache = null;
+
+/**
+ * Charge les plans de paiement en plusieurs fois depuis l'onglet `Échéances`
+ * (colonnes : Nom, Catégorie, Montant par échéance, Nombre de fois,
+ * Jour du mois, Date 1ère échéance, Actif). Cache 10 min.
+ * Renvoie [] si l'onglet n'existe pas encore.
+ */
+export async function loadEcheances(force = false) {
+  if (!force && _echeancesCache && Date.now() - _echeancesCache.fetchedAt < CACHE_TTL_MS) {
+    return _echeancesCache.plans;
+  }
+  const sheets = getSheetsClient();
+  let rows = [];
+  try {
+    const { data } = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetId(),
+      range: `'${ECHEANCES_SHEET}'!A2:G`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+    });
+    rows = data.values || [];
+  } catch (err) {
+    if (!String(err.message).includes(ECHEANCES_SHEET)) throw err;
+    // Onglet pas encore créé
+  }
+
+  const plans = rows
+    .map((r) => ({
+      nom: (r[0] || '').toString().trim(),
+      categorie: r[1] || '',
+      montantEcheance: Number(r[2]) || 0,
+      nombreFois: Number(r[3]) || 0,
+      jourDuMois: Number(r[4]) || null,
+      dateDebut: parseFlexibleDate(r[5]),
+      actif: String(r[6] || '').trim().toLowerCase() === 'oui',
+    }))
+    .filter((p) => p.nom && p.montantEcheance > 0 && p.nombreFois > 0 && p.dateDebut);
+  _echeancesCache = { fetchedAt: Date.now(), plans };
+  return plans;
+}
+
+/**
+ * Parse une date de cellule Sheets qui peut être un serial number
+ * (cellule au format Date) ou une chaîne "YYYY-MM-DD" (saisie en texte).
+ */
+function parseFlexibleDate(v) {
+  if (typeof v === 'number') return serialToDate(v);
+  if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.trim())) {
+    return new Date(v.trim() + 'T00:00:00Z');
+  }
+  return null;
+}
+
+// ─── Produits (suivi des quantités) ───────────────────────────
+const PRODUITS_SHEET = 'Produits';
+
+/**
+ * Crée l'onglet `Produits` avec son en-tête s'il n'existe pas encore.
+ */
+async function ensureProduitsSheet() {
+  const ids = await getSheetIds();
+  if (ids[PRODUITS_SHEET] !== undefined) return;
+
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [{ addSheet: { properties: { title: PRODUITS_SHEET } } }],
+    },
+  });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: spreadsheetId(),
+    range: `'${PRODUITS_SHEET}'!A1:E1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [['Date', 'Catégorie', 'Enseigne', 'Produit', 'Quantité']] },
+  });
+  _sheetIdsCache = null;
+}
+
+/**
+ * Journalise les produits détectés par l'IA sur une dépense (une ligne par
+ * produit). Best-effort : à appeler après l'insertion de la dépense elle-même,
+ * ne doit jamais bloquer le flow principal en cas d'échec.
+ * @param {string} date  'YYYY-MM-DD'
+ * @param {string} categorie
+ * @param {string} enseigne
+ * @param {{nom: string, quantite: number}[]} produits
+ */
+export async function appendProductDetails(date, categorie, enseigne, produits) {
+  const rows = (produits || [])
+    .filter((p) => p?.nom && Number(p.quantite) > 0)
+    .map((p) => {
+      const [year, month, day] = date.split('-').map(Number);
+      return [`=DATE(${year};${month};${day})`, categorie, enseigne, p.nom, Number(p.quantite)];
+    });
+  if (rows.length === 0) return;
+
+  await ensureProduitsSheet();
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: spreadsheetId(),
+    range: `'${PRODUITS_SHEET}'!A:E`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: rows },
+  });
+}
+
+/**
+ * Agrège les quantités de produits pour un mois donné (défaut : mois courant).
+ * @param {string} [monthArg]  'YYYY-MM'
+ * @returns {Promise<{nom: string, quantite: number, achats: number}[]>}
+ */
+export async function listProductDetails(monthArg) {
+  const sheets = getSheetsClient();
+  let values = [];
+  try {
+    const { data } = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetId(),
+      range: `'${PRODUITS_SHEET}'!A2:E`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+    });
+    values = data.values || [];
+  } catch (err) {
+    if (!String(err.message).includes(PRODUITS_SHEET)) throw err;
+    // Onglet pas encore créé → aucun produit détecté jusqu'ici
+  }
+
+  const now = new Date();
+  let year = now.getUTCFullYear();
+  let month0 = now.getUTCMonth();
+  if (monthArg && /^\d{4}-\d{2}$/.test(monthArg)) {
+    const [y, m] = monthArg.split('-').map(Number);
+    year = y;
+    month0 = m - 1;
+  }
+  const start = new Date(Date.UTC(year, month0, 1));
+  const end = new Date(Date.UTC(year, month0 + 1, 1));
+
+  const byProduit = {};
+  for (const r of values) {
+    const date = serialToDate(r[0]);
+    if (!date || date < start || date >= end) continue;
+    const nom = (r[3] || '').toString().trim();
+    const qte = Number(r[4]) || 0;
+    if (!nom || qte <= 0) continue;
+    const key = nom.toLowerCase();
+    if (!byProduit[key]) byProduit[key] = { nom, quantite: 0, achats: 0 };
+    byProduit[key].quantite += qte;
+    byProduit[key].achats += 1;
+  }
+  return Object.values(byProduit).sort((a, b) => b.quantite - a.quantite);
+}

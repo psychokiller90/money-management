@@ -13,9 +13,11 @@ import {
   addEnseigne,
   findDuplicate,
   listExpenses,
+  appendProductDetails,
 } from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
 import { buildSoldeReport } from './stats.js';
+import { buildEcheancesReport } from './echeances.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -67,14 +69,19 @@ function fmtDate(isoDate) {
 }
 
 function formatRecap(data) {
-  return [
+  const lines = [
     '📋 <b>Dépense</b>\n',
     `🏷️ Catégorie : ${data.categorie ?? '—'}`,
     `📅 Date      : ${fmtDate(data.date)}`,
     `🏪 Enseigne  : ${data.enseigne ?? '—'}`,
     `📝 Détail    : ${data.designation || '(aucun)'}`,
     `💶 Montant   : ${data.montant ?? '—'} €`,
-  ].join('\n');
+  ];
+  if (data.produits?.length) {
+    lines.push('', '📦 <b>Produits :</b>');
+    for (const p of data.produits) lines.push(`   • ${p.nom} ×${p.quantite}`);
+  }
+  return lines.join('\n');
 }
 
 // ─── Handler photo ────────────────────────────────────────────
@@ -402,6 +409,11 @@ export async function handleBatchAll(ctx) {
         designation: t.designation || '',
         montant: t.montant,
       });
+      if (t.produits?.length) {
+        await appendProductDetails(t.date, t.categorie, t.enseigne, t.produits).catch((err) =>
+          console.error('[appendProductDetails]', err)
+        );
+      }
       ok++;
     } catch (err) {
       errors.push(`${t.enseigne || '?'} — ${err.message}`);
@@ -723,6 +735,13 @@ export async function handleConfirm(ctx) {
       await updateExpense(s.rowIndex, payload);
     } else {
       await appendExpense(payload);
+    }
+
+    // Journal des produits/quantités (best-effort, ne doit jamais bloquer l'insertion)
+    if (s.data.produits?.length) {
+      await appendProductDetails(payload.date, payload.categorie, payload.enseigne, s.data.produits).catch(
+        (err) => console.error('[appendProductDetails]', err)
+      );
     }
 
     // ── Mode batch séquentiel : insère puis passe à la suivante ──
@@ -1321,6 +1340,7 @@ function buildAddData(expense, refs, today) {
     designation: '',
     date: expense.date || today.toISOString().slice(0, 10),
     montant,
+    produits: expense.produits || [],
   };
 }
 
@@ -1367,6 +1387,11 @@ async function handleChatQuery(ctx, question) {
     // 4) Solde restant du mois → lecture "Vue globale"
     if (q?.type === 'solde') {
       return finish(`🤖 ${await buildSoldeReport()}`);
+    }
+
+    // 4bis) Paiements en plusieurs fois → lecture onglet "Échéances"
+    if (q?.type === 'echeances') {
+      return finish(`🤖 ${await buildEcheancesReport(q.enseigne || undefined)}`);
     }
 
     // 5) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)
