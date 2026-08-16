@@ -742,23 +742,89 @@ const PRODUITS_SHEET = 'Produits';
  * Crée l'onglet `Produits` avec son en-tête s'il n'existe pas encore.
  */
 async function ensureProduitsSheet() {
-  const ids = await getSheetIds();
-  if (ids[PRODUITS_SHEET] !== undefined) return;
-
   const sheets = getSheetsClient();
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: spreadsheetId(),
-    requestBody: {
-      requests: [{ addSheet: { properties: { title: PRODUITS_SHEET } } }],
-    },
-  });
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: spreadsheetId(),
-    range: `'${PRODUITS_SHEET}'!A1:E1`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [['Date', 'Catégorie', 'Enseigne', 'Produit', 'Quantité']] },
-  });
-  _sheetIdsCache = null;
+  let ids = await getSheetIds();
+  let sheetId = ids[PRODUITS_SHEET];
+
+  if (sheetId === undefined) {
+    const { data } = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: spreadsheetId(),
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: PRODUITS_SHEET } } }],
+      },
+    });
+    sheetId = data.replies[0].addSheet.properties.sheetId;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: spreadsheetId(),
+      range: `'${PRODUITS_SHEET}'!A1:E1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [['Date', 'Catégorie', 'Enseigne', 'Produit', 'Quantité']] },
+    });
+    // Colonne A (Date) affichée en date, pas en numéro de série brut
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: spreadsheetId(),
+      requestBody: {
+        requests: [
+          {
+            repeatCell: {
+              range: { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 },
+              cell: { userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'dd/mm/yyyy' } } },
+              fields: 'userEnteredFormat.numberFormat',
+            },
+          },
+        ],
+      },
+    });
+    _sheetIdsCache = null;
+  }
+}
+
+/**
+ * Produits « bébé » suivis mois après mois. Quelle que soit la marque lue sur
+ * le ticket (Guigoz, Gallia…), on enregistre un libellé unique et la catégorie
+ * Jumeaux, pour que /quantites agrège toutes les boîtes sous une seule ligne.
+ * Ajouter un produit = ajouter une entrée ici.
+ */
+const PRODUITS_SUIVIS = [
+  {
+    libelle: 'Lait',
+    categorie: 'Jumeaux',
+    motifs: [
+      /\blait\b/, /guigoz/, /gallia/, /nidal/, /novalac/, /bledi/, /modilac/,
+      /physiolac/, /enfamil/, /biostime/, /premibio/, /\bage\b/,
+    ],
+  },
+  {
+    libelle: 'Couches',
+    categorie: 'Jumeaux',
+    motifs: [/couche/, /pampers/, /lotus baby/, /joone/, /love ?& ?green/],
+  },
+  {
+    libelle: 'Sérum physiologique',
+    categorie: 'Jumeaux',
+    motifs: [/serum physio/, /physiodose/, /physiologica/, /dosette/],
+  },
+];
+
+/** Minuscules sans accents, espaces conservés (pour tester les motifs ci-dessus). */
+function normalizeProduitNom(s) {
+  return String(s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+/**
+ * Remplace le nom brut lu sur le ticket par le libellé suivi correspondant
+ * (et sa catégorie). Retourne le produit inchangé s'il n'est pas suivi.
+ */
+function normaliserProduit(nom, categorieParDefaut) {
+  const n = normalizeProduitNom(nom);
+  const suivi = PRODUITS_SUIVIS.find((p) => p.motifs.some((m) => m.test(n)));
+  return suivi
+    ? { nom: suivi.libelle, categorie: suivi.categorie }
+    : { nom, categorie: categorieParDefaut };
 }
 
 /**
@@ -771,12 +837,28 @@ async function ensureProduitsSheet() {
  * @param {{nom: string, quantite: number}[]} produits
  */
 export async function appendProductDetails(date, categorie, enseigne, produits) {
-  const rows = (produits || [])
-    .filter((p) => p?.nom && Number(p.quantite) > 0)
-    .map((p) => {
-      const [year, month, day] = date.split('-').map(Number);
-      return [`=DATE(${year};${month};${day})`, categorie, enseigne, p.nom, Number(p.quantite)];
-    });
+  const [year, month, day] = date.split('-').map(Number);
+  const dateFormula = `=DATE(${year};${month};${day})`;
+
+  // Deux marques de lait sur le même ticket deviennent une seule ligne « Lait »,
+  // pour que le compteur d'achats de /quantites reste par ticket.
+  const cumul = new Map();
+  for (const p of produits || []) {
+    if (!p?.nom || !(Number(p.quantite) > 0)) continue;
+    const { nom, categorie: cat } = normaliserProduit(p.nom, categorie);
+    const cle = `${cat}|${nom.toLowerCase()}`;
+    const dejaVu = cumul.get(cle);
+    if (dejaVu) dejaVu.quantite += Number(p.quantite);
+    else cumul.set(cle, { nom, categorie: cat, quantite: Number(p.quantite) });
+  }
+
+  const rows = [...cumul.values()].map((p) => [
+    dateFormula,
+    p.categorie,
+    enseigne,
+    p.nom,
+    p.quantite,
+  ]);
   if (rows.length === 0) return;
 
   await ensureProduitsSheet();

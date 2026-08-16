@@ -84,6 +84,15 @@ function formatRecap(data) {
   return lines.join('\n');
 }
 
+// Quand des produits sont détectés, la Désignation écrite dans le Sheet
+// reprend leur détail (plus précis que le résumé libre de l'IA).
+function buildDesignationForSheet(data) {
+  if (data.produits?.length) {
+    return data.produits.map((p) => `${p.nom} ×${p.quantite}`).join(', ');
+  }
+  return data.designation || '';
+}
+
 // ─── Handler photo ────────────────────────────────────────────
 const _seenMediaGroups = new Set();
 
@@ -406,7 +415,7 @@ export async function handleBatchAll(ctx) {
         categorie: t.categorie,
         date: t.date,
         enseigne: t.enseigne,
-        designation: t.designation || '',
+        designation: buildDesignationForSheet(t),
         montant: t.montant,
       });
       if (t.produits?.length) {
@@ -728,7 +737,7 @@ export async function handleConfirm(ctx) {
       categorie: s.data.categorie,
       date: s.data.date,
       enseigne: s.data.enseigne,
-      designation: s.data.designation || '',
+      designation: buildDesignationForSheet(s.data),
       montant: s.data.montant,
     };
     if (s.isExisting && s.rowIndex) {
