@@ -44,17 +44,20 @@ Règles :
  * @param {string} todayIso  Date du jour 'YYYY-MM-DD'
  * @param {{categories: string[]}} refs
  */
-export async function parseFinancialQuery(question, todayIso, refs) {
+export async function parseFinancialQuery(question, todayIso, refs, produitsSuivis = []) {
   const catList = refs.categories.map((c) => `"${c}"`).join(', ');
+  const prodList = produitsSuivis.map((p) => `"${p}"`).join(', ') || '(aucun)';
   const prompt = `Tu convertis une question en requête JSON sur des dépenses personnelles.
 Date du jour : ${todayIso}.
 Catégories valides : ${catList}.
+Produits dont les quantités sont comptées : ${prodList}.
 
 Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
 {
-  "type": "query" | "advice" | "hors_sujet" | "ajout" | "solde" | "echeances",
+  "type": "query" | "advice" | "hors_sujet" | "ajout" | "solde" | "echeances" | "quantites",
   "enseigne": string|null,
   "categorie": string|null,
+  "produit": string|null,
   "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
   "metric": "sum"|"count"|"list"|"max"|"min"|"average",
   "expense": {"montant":number|null,"enseigne":string|null,"categorie":string|null,"date":"YYYY-MM-DD"|null,"produits":[{"nom":string,"quantite":number}]}|null
@@ -76,6 +79,8 @@ DISTINCTION IMPORTANTE — interrogation vs déclaration :
 - type="ajout" si l'utilisateur DÉCLARE une dépense effectuée à enregistrer ("j'ai dépensé 12€ chez X", "ajoute 30€ de courses", "note un paiement de 5€ à la boulangerie", "15,50 chez Leclerc hier").
 - type="solde" si l'utilisateur demande son SOLDE RESTANT / ce qu'il lui reste à dépenser ce mois ("mon solde", "combien il me reste", "solde restant", "il me reste combien ce mois-ci").
 - type="echeances" si l'utilisateur interroge ses PAIEMENTS EN PLUSIEURS FOIS / échéances en cours ("mes échéances", "combien de fois il me reste à payer", "où j'en suis sur le canapé", "il me reste combien d'échéances", "mes paiements en 3 fois", "quand est ma prochaine échéance"). Si un achat précis est nommé, mets son nom dans "enseigne" ; sinon "enseigne"=null.
+- type="quantites" si l'utilisateur demande un NOMBRE D'ARTICLES et non une somme d'argent ("combien de couches ce mois", "combien de boîtes de lait", "combien de sérum physiologique j'ai acheté", "j'en ai acheté combien"). Indice décisif : la question porte sur une CHOSE consommable (couches, lait, dosettes…), pas sur des euros. Dans ce cas mets le produit concerné dans "produit" (une valeur de la liste des produits comptés si elle correspond, sinon le mot employé), et laisse "categorie" et "enseigne" à null.
+- ATTENTION : "combien de couches" = type="quantites" (on compte des couches), alors que "combien j'ai dépensé en couches" = type="query" (on compte des euros). Un mot comme "couches" ou "lait" désigne un PRODUIT, jamais une catégorie.
 - type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
 - type="hors_sujet" si aucun rapport avec l'argent / le budget / les finances.
 
@@ -141,7 +146,9 @@ Si l'enseigne réelle ne figure dans AUCUNE liste, propose-la quand même et met
 
 Pour la "designation" : résume en 3-8 mots les articles principaux de la facture (ex: "Pain, lait, œufs"). Si rien d'identifiable, mets null.
 
-Pour "produits" : si le ticket liste des articles individuels avec leurs quantités (ex: ticket de pharmacie ou de supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}. Regroupe les articles identiques (ex: 3 boîtes de lait identique → un seul objet avec quantite=3). Si aucun article n'est individuellement identifiable, mets un tableau vide [].
+Pour "produits" : si le ticket liste des articles individuels avec leurs quantités (ex: ticket de pharmacie ou de supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n, "unites_par_paquet": n}. Regroupe les articles identiques (ex: 3 boîtes de lait identique → un seul objet avec quantite=3). Si aucun article n'est individuellement identifiable, mets un tableau vide [].
+- "quantite" = le nombre de paquets/boîtes/articles achetés.
+- "unites_par_paquet" = le contenu d'UN paquet quand il est indiqué (ex: paquet de 62 couches → 62 ; boîte de 40 dosettes → 40). Mets null si le conditionnement n'est pas précisé, ou s'il s'agit d'un poids/volume (800 g, 1 L).
 
 Retourne EXACTEMENT ce JSON :
 {
@@ -153,7 +160,7 @@ Retourne EXACTEMENT ce JSON :
   "enseigne_in_list": true,
   "enseigne_confidence": "high",
   "designation": "Pain, lait, œufs",
-  "produits": [{"nom": "Lait", "quantite": 3}]
+  "produits": [{"nom": "Lait", "quantite": 3, "unites_par_paquet": null}]
 }`;
 }
 
@@ -179,7 +186,7 @@ Autres règles :
 - Pour chaque dépense : date, montant (positif), enseigne/libellé, catégorie.
 - Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
 - "designation" : résume le contenu en 3-8 mots (ex: "Churros, sundae"), ou null si rien d'utile.
-- "produits" : si le ticket liste des articles individuels avec leurs quantités (pharmacie, supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}, en regroupant les identiques. Tableau vide [] si non applicable (relevé bancaire, article non identifiable...).
+- "produits" : si le ticket liste des articles individuels avec leurs quantités (pharmacie, supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n, "unites_par_paquet": n}, en regroupant les identiques. "quantite" = nombre de paquets achetés ; "unites_par_paquet" = contenu d'un paquet s'il est indiqué (paquet de 62 couches → 62), sinon null. Tableau vide [] si non applicable (relevé bancaire, article non identifiable...).
 - Champ "transaction_type" :
   * "retrait" si c'est un retrait d'espèces / DAB / ATM
   * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)

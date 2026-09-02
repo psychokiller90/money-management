@@ -100,7 +100,8 @@ bot.help((ctx) =>
       '<b>💳 Paiements en plusieurs fois & quantités</b>\n' +
       '• /echeances — suivi des plans de paiement en cours (onglet Échéances)\n' +
       '• /quantites — quantités de produits achetées ce mois-ci (ex: boîtes de lait, couches)\n' +
-      '• /quantites <code>YYYY-MM</code> — quantités d\'un mois précis\n\n' +
+      '• /quantites <code>YYYY-MM</code> — quantités d\'un mois précis\n' +
+      '  <i>Tu peux aussi demander « combien de couches ce mois ? » en langage naturel</i>\n\n' +
       '<b>🏷️ Gestion des listes</b>\n' +
       '• /categories — liste catégories et enseignes\n' +
       '• /addcategorie · /delcategorie · /renamecategorie\n' +

@@ -116,31 +116,72 @@ export async function handleEcheances(ctx) {
   }
 }
 
+/** « 2 (soit 386 unités) — 1 achat », ou juste « 3 — 2 achats » si le contenu est inconnu. */
+function fmtQuantite(item) {
+  const achats = `${item.achats} achat${item.achats > 1 ? 's' : ''}`;
+  const contenu = item.unites > 0 ? ` (soit ${item.unites} unités)` : '';
+  return `<b>${item.quantite}</b>${contenu} — ${achats}`;
+}
+
+/**
+ * Convertit la période comprise par l'IA en 'YYYY-MM'.
+ * Les périodes non mensuelles (semaine, tout) retombent sur le mois courant.
+ */
+export function periodToMonthArg(period) {
+  if (!period) return undefined;
+  if (period.kind === 'month' && period.year && period.month) {
+    return `${period.year}-${String(period.month).padStart(2, '0')}`;
+  }
+  if (period.start && /^\d{4}-\d{2}/.test(period.start)) return period.start.slice(0, 7);
+  return undefined;
+}
+
+/**
+ * Construit le rapport des quantités achetées sur un mois.
+ * Réutilisé par la commande /quantites ET l'assistant (texte/vocal).
+ * @param {string} [produitFiltre]  Ne garder qu'un produit (ex: "couches")
+ * @param {string} [monthArg]  'YYYY-MM' (défaut : mois courant)
+ * @returns {Promise<string>} message HTML prêt à envoyer (sans préfixe 🤖)
+ */
+export async function buildQuantitesReport(produitFiltre, monthArg) {
+  const items = await listProductDetails(monthArg);
+
+  const now = new Date();
+  const [year, month0] = monthArg && /^\d{4}-\d{2}$/.test(monthArg)
+    ? [Number(monthArg.slice(0, 4)), Number(monthArg.slice(5, 7)) - 1]
+    : [now.getUTCFullYear(), now.getUTCMonth()];
+  const title = `${MOIS_FR[month0]} ${year}`;
+
+  if (produitFiltre) {
+    const cible = normalizeStr(produitFiltre);
+    const retenus = items.filter((i) => {
+      const nom = normalizeStr(i.nom);
+      return nom.includes(cible) || cible.includes(nom);
+    });
+    if (retenus.length === 0) {
+      const dispo = items.length
+        ? `\n\nProduits enregistrés ce mois-ci : ${items.map((i) => i.nom).join(', ')}.`
+        : '';
+      return `📦 Aucun achat de « ${produitFiltre} » enregistré en ${title}.${dispo}`;
+    }
+    return [`📦 <b>${title}</b>\n`, ...retenus.map((i) => `• ${i.nom} : ${fmtQuantite(i)}`)].join('\n');
+  }
+
+  if (items.length === 0) {
+    return `📦 <b>Quantités — ${title}</b>\n\nAucun produit détaillé enregistré ce mois-ci.`;
+  }
+  return [
+    `📦 <b>Quantités — ${title}</b>\n`,
+    ...items.map((i) => `• ${i.nom} : ${fmtQuantite(i)}`),
+  ].join('\n');
+}
+
 export async function handleQuantites(ctx) {
   if (!isAuthorized(ctx.from.id)) return ctx.reply('⛔ Accès non autorisé.');
   try {
     const arg = ctx.message.text.split(' ')[1];
     const monthArg = arg && /^\d{4}-\d{2}$/.test(arg) ? arg : undefined;
-    const items = await listProductDetails(monthArg);
-
-    const now = new Date();
-    const [year, month0] = monthArg
-      ? [Number(monthArg.slice(0, 4)), Number(monthArg.slice(5, 7)) - 1]
-      : [now.getUTCFullYear(), now.getUTCMonth()];
-    const title = `${MOIS_FR[month0]} ${year}`;
-
-    if (items.length === 0) {
-      return ctx.reply(
-        `📦 <b>Quantités — ${title}</b>\n\nAucun produit détaillé enregistré ce mois-ci.`,
-        { parse_mode: 'HTML' }
-      );
-    }
-
-    const lines = [`📦 <b>Quantités — ${title}</b>\n`];
-    for (const item of items) {
-      lines.push(`• ${item.nom} : <b>${item.quantite}</b> (${item.achats} achat${item.achats > 1 ? 's' : ''})`);
-    }
-    await ctx.reply(lines.join('\n'), { parse_mode: 'HTML' });
+    await ctx.reply(await buildQuantitesReport(undefined, monthArg), { parse_mode: 'HTML' });
   } catch (err) {
     console.error('[handleQuantites]', err);
     await ctx.reply(`❌ <b>Erreur</b>\n\n<code>${err.message}</code>`, { parse_mode: 'HTML' });

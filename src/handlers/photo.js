@@ -14,10 +14,11 @@ import {
   findDuplicate,
   listExpenses,
   appendProductDetails,
+  getProduitsSuivis,
 } from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
 import { buildSoldeReport } from './stats.js';
-import { buildEcheancesReport } from './echeances.js';
+import { buildEcheancesReport, buildQuantitesReport, periodToMonthArg } from './echeances.js';
 
 const SESSION_TTL_MS = 30 * 60 * 1000;
 
@@ -1367,7 +1368,12 @@ async function handleChatQuery(ctx, question) {
     // 1) L'IA comprend la demande → structure
     let q = null;
     try {
-      q = await parseFinancialQuery(question, today.toISOString().slice(0, 10), refs);
+      q = await parseFinancialQuery(
+        question,
+        today.toISOString().slice(0, 10),
+        refs,
+        getProduitsSuivis()
+      );
     } catch (e) {
       console.warn('[parseFinancialQuery]', e.message);
     }
@@ -1401,6 +1407,13 @@ async function handleChatQuery(ctx, question) {
     // 4bis) Paiements en plusieurs fois → lecture onglet "Échéances"
     if (q?.type === 'echeances') {
       return finish(`🤖 ${await buildEcheancesReport(q.enseigne || undefined)}`);
+    }
+
+    // 4ter) Nombre d'articles achetés (couches, lait…) → lecture onglet "Produits"
+    if (q?.type === 'quantites') {
+      return finish(
+        `🤖 ${await buildQuantitesReport(q.produit || undefined, periodToMonthArg(q.period))}`
+      );
     }
 
     // 5) Requête chiffrée → calcul DÉTERMINISTE côté JS (précision garantie)

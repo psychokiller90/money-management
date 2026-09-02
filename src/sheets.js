@@ -738,12 +738,17 @@ function parseFlexibleDate(v) {
 // ─── Produits (suivi des quantités) ───────────────────────────
 const PRODUITS_SHEET = 'Produits';
 
+const PRODUITS_HEADER = ['Date', 'Catégorie', 'Enseigne', 'Produit', 'Quantité', 'Unités'];
+let _produitsHeaderVerifie = false;
+
 /**
- * Crée l'onglet `Produits` avec son en-tête s'il n'existe pas encore.
+ * Crée l'onglet `Produits` avec son en-tête s'il n'existe pas encore, et
+ * complète l'en-tête des onglets créés par une version antérieure du bot
+ * (colonne `Unités` ajoutée après coup).
  */
 async function ensureProduitsSheet() {
   const sheets = getSheetsClient();
-  let ids = await getSheetIds();
+  const ids = await getSheetIds();
   let sheetId = ids[PRODUITS_SHEET];
 
   if (sheetId === undefined) {
@@ -756,9 +761,9 @@ async function ensureProduitsSheet() {
     sheetId = data.replies[0].addSheet.properties.sheetId;
     await sheets.spreadsheets.values.update({
       spreadsheetId: spreadsheetId(),
-      range: `'${PRODUITS_SHEET}'!A1:E1`,
+      range: `'${PRODUITS_SHEET}'!A1:F1`,
       valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [['Date', 'Catégorie', 'Enseigne', 'Produit', 'Quantité']] },
+      requestBody: { values: [PRODUITS_HEADER] },
     });
     // Colonne A (Date) affichée en date, pas en numéro de série brut
     await sheets.spreadsheets.batchUpdate({
@@ -776,7 +781,25 @@ async function ensureProduitsSheet() {
       },
     });
     _sheetIdsCache = null;
+    _produitsHeaderVerifie = true;
+    return;
   }
+
+  if (_produitsHeaderVerifie) return;
+  const { data } = await sheets.spreadsheets.values.get({
+    spreadsheetId: spreadsheetId(),
+    range: `'${PRODUITS_SHEET}'!A1:F1`,
+  });
+  const header = data.values?.[0] || [];
+  if (!header[5]) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: spreadsheetId(),
+      range: `'${PRODUITS_SHEET}'!F1`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[PRODUITS_HEADER[5]]] },
+    });
+  }
+  _produitsHeaderVerifie = true;
 }
 
 /**
@@ -806,6 +829,11 @@ const PRODUITS_SUIVIS = [
   },
 ];
 
+/** Libellés des produits suivis, pour les proposer à l'IA et à l'assistant. */
+export function getProduitsSuivis() {
+  return PRODUITS_SUIVIS.map((p) => p.libelle);
+}
+
 /** Minuscules sans accents, espaces conservés (pour tester les motifs ci-dessus). */
 function normalizeProduitNom(s) {
   return String(s || '')
@@ -813,6 +841,19 @@ function normalizeProduitNom(s) {
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
     .trim();
+}
+
+/**
+ * Nombre d'unités contenues dans un conditionnement. L'IA le fournit via
+ * `unites_par_paquet` ; à défaut on le récupère dans le libellé, où il est
+ * souvent écrit entre parenthèses ("Couches bébé (224 unités)").
+ * @returns {number} 0 si inconnu
+ */
+function unitesParPaquet(produit) {
+  const direct = Number(produit.unites_par_paquet);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const m = normalizeProduitNom(produit.nom).match(/(\d+)\s*(unites?|pieces?|couches?|dosettes?|lingettes?)\b/);
+  return m ? Number(m[1]) : 0;
 }
 
 /**
@@ -834,22 +875,29 @@ function normaliserProduit(nom, categorieParDefaut) {
  * @param {string} date  'YYYY-MM-DD'
  * @param {string} categorie
  * @param {string} enseigne
- * @param {{nom: string, quantite: number}[]} produits
+ * @param {{nom: string, quantite: number, unites_par_paquet?: number}[]} produits
  */
 export async function appendProductDetails(date, categorie, enseigne, produits) {
   const [year, month, day] = date.split('-').map(Number);
   const dateFormula = `=DATE(${year};${month};${day})`;
 
   // Deux marques de lait sur le même ticket deviennent une seule ligne « Lait »,
-  // pour que le compteur d'achats de /quantites reste par ticket.
+  // pour que le compteur d'achats de /quantites reste par ticket. La colonne
+  // Unités cumule le contenu réel (2 paquets de 224 et 162 → 386 couches).
   const cumul = new Map();
   for (const p of produits || []) {
     if (!p?.nom || !(Number(p.quantite) > 0)) continue;
     const { nom, categorie: cat } = normaliserProduit(p.nom, categorie);
+    const quantite = Number(p.quantite);
+    const unites = unitesParPaquet(p) * quantite;
     const cle = `${cat}|${nom.toLowerCase()}`;
     const dejaVu = cumul.get(cle);
-    if (dejaVu) dejaVu.quantite += Number(p.quantite);
-    else cumul.set(cle, { nom, categorie: cat, quantite: Number(p.quantite) });
+    if (dejaVu) {
+      dejaVu.quantite += quantite;
+      dejaVu.unites += unites;
+    } else {
+      cumul.set(cle, { nom, categorie: cat, quantite, unites });
+    }
   }
 
   const rows = [...cumul.values()].map((p) => [
@@ -858,6 +906,7 @@ export async function appendProductDetails(date, categorie, enseigne, produits) 
     enseigne,
     p.nom,
     p.quantite,
+    p.unites || '',
   ]);
   if (rows.length === 0) return;
 
@@ -865,7 +914,7 @@ export async function appendProductDetails(date, categorie, enseigne, produits) 
   const sheets = getSheetsClient();
   await sheets.spreadsheets.values.append({
     spreadsheetId: spreadsheetId(),
-    range: `'${PRODUITS_SHEET}'!A:E`,
+    range: `'${PRODUITS_SHEET}'!A:F`,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody: { values: rows },
@@ -874,8 +923,9 @@ export async function appendProductDetails(date, categorie, enseigne, produits) 
 
 /**
  * Agrège les quantités de produits pour un mois donné (défaut : mois courant).
+ * `unites` cumule le contenu réel des conditionnements (0 si inconnu).
  * @param {string} [monthArg]  'YYYY-MM'
- * @returns {Promise<{nom: string, quantite: number, achats: number}[]>}
+ * @returns {Promise<{nom: string, quantite: number, unites: number, achats: number}[]>}
  */
 export async function listProductDetails(monthArg) {
   const sheets = getSheetsClient();
@@ -883,7 +933,7 @@ export async function listProductDetails(monthArg) {
   try {
     const { data } = await sheets.spreadsheets.values.get({
       spreadsheetId: spreadsheetId(),
-      range: `'${PRODUITS_SHEET}'!A2:E`,
+      range: `'${PRODUITS_SHEET}'!A2:F`,
       valueRenderOption: 'UNFORMATTED_VALUE',
     });
     values = data.values || [];
@@ -911,8 +961,9 @@ export async function listProductDetails(monthArg) {
     const qte = Number(r[4]) || 0;
     if (!nom || qte <= 0) continue;
     const key = nom.toLowerCase();
-    if (!byProduit[key]) byProduit[key] = { nom, quantite: 0, achats: 0 };
+    if (!byProduit[key]) byProduit[key] = { nom, quantite: 0, unites: 0, achats: 0 };
     byProduit[key].quantite += qte;
+    byProduit[key].unites += Number(r[5]) || 0;
     byProduit[key].achats += 1;
   }
   return Object.values(byProduit).sort((a, b) => b.quantite - a.quantite);
