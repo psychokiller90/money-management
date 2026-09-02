@@ -116,11 +116,39 @@ export async function handleEcheances(ctx) {
   }
 }
 
-/** « 2 (soit 386 unités) — 1 achat », ou juste « 3 — 2 achats » si le contenu est inconnu. */
-function fmtQuantite(item) {
+const jourIso = (d) => d.toISOString().slice(0, 10);
+
+/**
+ * Montant dépensé pour un produit sur le mois. Les prix ne sont pas stockés
+ * par article : on remonte à la dépense d'origine (même date + même enseigne).
+ * Le montant n'est donc affiché que si le ticket ne contenait QUE ce produit —
+ * sinon on ne saurait pas quelle part lui attribuer, et un chiffre faux serait
+ * pire que pas de chiffre.
+ * @returns {number} 0 si non attribuable
+ */
+function montantProduit(item, expenses) {
+  const vues = new Set();
+  let montant = 0;
+  for (const t of item.tickets) {
+    if (!t.seulProduitDuTicket) continue;
+    const dep = expenses.find(
+      (e) =>
+        e.date &&
+        jourIso(e.date) === jourIso(t.date) &&
+        normalizeStr(e.enseigne) === normalizeStr(t.enseigne)
+    );
+    if (!dep || vues.has(dep.rowIndex)) continue;
+    vues.add(dep.rowIndex);
+    montant += dep.montant;
+  }
+  return montant;
+}
+
+/** « Couches : 2 — 96,64 € (1 achat) », sans le montant s'il n'est pas attribuable. */
+function fmtQuantite(item, expenses) {
   const achats = `${item.achats} achat${item.achats > 1 ? 's' : ''}`;
-  const contenu = item.unites > 0 ? ` (soit ${item.unites} unités)` : '';
-  return `<b>${item.quantite}</b>${contenu} — ${achats}`;
+  const montant = montantProduit(item, expenses);
+  return `<b>${item.quantite}</b>${montant > 0 ? ` — ${fmtAmount(montant)}` : ''} (${achats})`;
 }
 
 /**
@@ -144,7 +172,7 @@ export function periodToMonthArg(period) {
  * @returns {Promise<string>} message HTML prêt à envoyer (sans préfixe 🤖)
  */
 export async function buildQuantitesReport(produitFiltre, monthArg) {
-  const items = await listProductDetails(monthArg);
+  const [items, expenses] = await Promise.all([listProductDetails(monthArg), listExpenses()]);
 
   const now = new Date();
   const [year, month0] = monthArg && /^\d{4}-\d{2}$/.test(monthArg)
@@ -164,7 +192,7 @@ export async function buildQuantitesReport(produitFiltre, monthArg) {
         : '';
       return `📦 Aucun achat de « ${produitFiltre} » enregistré en ${title}.${dispo}`;
     }
-    return [`📦 <b>${title}</b>\n`, ...retenus.map((i) => `• ${i.nom} : ${fmtQuantite(i)}`)].join('\n');
+    return [`📦 <b>${title}</b>\n`, ...retenus.map((i) => `• ${i.nom} : ${fmtQuantite(i, expenses)}`)].join('\n');
   }
 
   if (items.length === 0) {
@@ -172,7 +200,7 @@ export async function buildQuantitesReport(produitFiltre, monthArg) {
   }
   return [
     `📦 <b>Quantités — ${title}</b>\n`,
-    ...items.map((i) => `• ${i.nom} : ${fmtQuantite(i)}`),
+    ...items.map((i) => `• ${i.nom} : ${fmtQuantite(i, expenses)}`),
   ].join('\n');
 }
 

@@ -146,9 +146,7 @@ Si l'enseigne réelle ne figure dans AUCUNE liste, propose-la quand même et met
 
 Pour la "designation" : résume en 3-8 mots les articles principaux de la facture (ex: "Pain, lait, œufs"). Si rien d'identifiable, mets null.
 
-Pour "produits" : si le ticket liste des articles individuels avec leurs quantités (ex: ticket de pharmacie ou de supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n, "unites_par_paquet": n}. Regroupe les articles identiques (ex: 3 boîtes de lait identique → un seul objet avec quantite=3). Si aucun article n'est individuellement identifiable, mets un tableau vide [].
-- "quantite" = le nombre de paquets/boîtes/articles achetés.
-- "unites_par_paquet" = le contenu d'UN paquet quand il est indiqué (ex: paquet de 62 couches → 62 ; boîte de 40 dosettes → 40). Mets null si le conditionnement n'est pas précisé, ou s'il s'agit d'un poids/volume (800 g, 1 L).
+Pour "produits" : si le ticket liste des articles individuels avec leurs quantités (ex: ticket de pharmacie ou de supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}. "quantite" = le nombre de paquets/boîtes/articles achetés. Regroupe les articles identiques (ex: 3 boîtes de lait identique → un seul objet avec quantite=3). Si aucun article n'est individuellement identifiable, mets un tableau vide [].
 
 Retourne EXACTEMENT ce JSON :
 {
@@ -160,7 +158,7 @@ Retourne EXACTEMENT ce JSON :
   "enseigne_in_list": true,
   "enseigne_confidence": "high",
   "designation": "Pain, lait, œufs",
-  "produits": [{"nom": "Lait", "quantite": 3, "unites_par_paquet": null}]
+  "produits": [{"nom": "Lait", "quantite": 3}]
 }`;
 }
 
@@ -186,7 +184,7 @@ Autres règles :
 - Pour chaque dépense : date, montant (positif), enseigne/libellé, catégorie.
 - Si l'enseigne n'est pas dans la liste → enseigne_in_list: false.
 - "designation" : résume le contenu en 3-8 mots (ex: "Churros, sundae"), ou null si rien d'utile.
-- "produits" : si le ticket liste des articles individuels avec leurs quantités (pharmacie, supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n, "unites_par_paquet": n}, en regroupant les identiques. "quantite" = nombre de paquets achetés ; "unites_par_paquet" = contenu d'un paquet s'il est indiqué (paquet de 62 couches → 62), sinon null. Tableau vide [] si non applicable (relevé bancaire, article non identifiable...).
+- "produits" : si le ticket liste des articles individuels avec leurs quantités (pharmacie, supermarché), extrais chaque article distinct sous la forme {"nom": "...", "quantite": n}, en regroupant les identiques. "quantite" = nombre de paquets/articles achetés. Tableau vide [] si non applicable (relevé bancaire, article non identifiable...).
 - Champ "transaction_type" :
   * "retrait" si c'est un retrait d'espèces / DAB / ATM
   * "virement" si c'est un virement sortant (SCT, virement SEPA, prélèvement entre comptes propres)
