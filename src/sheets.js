@@ -942,3 +942,165 @@ export async function listProductDetails(monthArg) {
   }
   return Object.values(byProduit).sort((a, b) => b.quantite - a.quantite);
 }
+
+// ─── Notes (retours sur le bot) ───────────────────────────────
+const NOTES_SHEET = 'Notes';
+const NOTES_HEADER = ['ID', 'Date', 'Statut', 'Note'];
+
+/**
+ * Crée l'onglet `Notes` avec son en-tête s'il n'existe pas encore.
+ */
+async function ensureNotesSheet() {
+  const sheets = getSheetsClient();
+  const ids = await getSheetIds();
+  if (ids[NOTES_SHEET] !== undefined) return;
+
+  const { data } = await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: { requests: [{ addSheet: { properties: { title: NOTES_SHEET } } }] },
+  });
+  const sheetId = data.replies[0].addSheet.properties.sheetId;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: spreadsheetId(),
+    range: `'${NOTES_SHEET}'!A1:D1`,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [NOTES_HEADER] },
+  });
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [
+        {
+          repeatCell: {
+            range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+            cell: { userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'dd/mm/yyyy' } } },
+            fields: 'userEnteredFormat.numberFormat',
+          },
+        },
+      ],
+    },
+  });
+  _sheetIdsCache = null;
+}
+
+/**
+ * Liste les notes actives, de la plus récente à la plus ancienne.
+ * @returns {Promise<{rowIndex:number, id:string, date:Date|null, statut:string, note:string}[]>}
+ */
+export async function listNotes() {
+  const sheets = getSheetsClient();
+  let values = [];
+  try {
+    const { data } = await sheets.spreadsheets.values.get({
+      spreadsheetId: spreadsheetId(),
+      range: `'${NOTES_SHEET}'!A2:D`,
+      valueRenderOption: 'UNFORMATTED_VALUE',
+    });
+    values = data.values || [];
+  } catch (err) {
+    if (!String(err.message).includes(NOTES_SHEET)) throw err;
+    // Onglet pas encore créé → aucune note
+  }
+  return values
+    .map((r, i) => ({
+      rowIndex: i + 2,
+      id: (r[0] || '').toString().trim(),
+      date: serialToDate(r[1]),
+      statut: (r[2] || 'nouvelle').toString().trim(),
+      note: (r[3] || '').toString().trim(),
+    }))
+    .filter((n) => n.id && n.note)
+    .sort((a, b) => b.rowIndex - a.rowIndex);
+}
+
+/**
+ * Retrouve une note par son ID. Le rowIndex est résolu à chaque appel :
+ * il bouge dès qu'une note est supprimée, donc on ne le met jamais en cache.
+ */
+async function findNoteById(id) {
+  const cible = String(id).toLowerCase();
+  const notes = await listNotes();
+  return notes.find((n) => n.id.toLowerCase() === cible) || null;
+}
+
+/**
+ * Enregistre une nouvelle note. L'ID suit le max existant : un ID supprimé
+ * n'est jamais réattribué, pour qu'une référence reste sans ambiguïté.
+ * @param {string} texte
+ */
+export async function appendNote(texte) {
+  await ensureNotesSheet();
+  const notes = await listNotes();
+  const maxNum = notes.reduce((max, n) => {
+    const m = n.id.match(/^N(\d+)$/i);
+    return m ? Math.max(max, Number(m[1])) : max;
+  }, 0);
+  const id = `N${String(maxNum + 1).padStart(3, '0')}`;
+
+  const now = new Date();
+  const dateFormula = `=DATE(${now.getFullYear()};${now.getMonth() + 1};${now.getDate()})`;
+
+  const sheets = getSheetsClient();
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: spreadsheetId(),
+    range: `'${NOTES_SHEET}'!A:D`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody: { values: [[id, dateFormula, 'nouvelle', texte]] },
+  });
+  return { id, note: texte, statut: 'nouvelle' };
+}
+
+/**
+ * Met à jour le texte et/ou le statut d'une note.
+ * @param {string} id
+ * @param {{note?: string, statut?: string}} patch
+ */
+export async function updateNoteById(id, patch) {
+  const note = await findNoteById(id);
+  if (!note) throw new Error(`Note ${id} introuvable.`);
+
+  const sheets = getSheetsClient();
+  const data = [];
+  if (patch.statut !== undefined) {
+    data.push({ range: `'${NOTES_SHEET}'!C${note.rowIndex}`, values: [[patch.statut]] });
+  }
+  if (patch.note !== undefined) {
+    data.push({ range: `'${NOTES_SHEET}'!D${note.rowIndex}`, values: [[patch.note]] });
+  }
+  if (data.length === 0) return note;
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: { valueInputOption: 'USER_ENTERED', data },
+  });
+  return { ...note, ...patch };
+}
+
+/**
+ * Supprime définitivement une note (elle a été traitée).
+ * @param {string} id
+ */
+export async function deleteNoteById(id) {
+  const note = await findNoteById(id);
+  if (!note) throw new Error(`Note ${id} introuvable.`);
+
+  const sheets = getSheetsClient();
+  const ids = await getSheetIds();
+  const sheetId = ids[NOTES_SHEET];
+  if (sheetId === undefined) throw new Error(`Onglet ${NOTES_SHEET} introuvable.`);
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: spreadsheetId(),
+    requestBody: {
+      requests: [
+        {
+          deleteDimension: {
+            range: { sheetId, dimension: 'ROWS', startIndex: note.rowIndex - 1, endIndex: note.rowIndex },
+          },
+        },
+      ],
+    },
+  });
+  return note;
+}

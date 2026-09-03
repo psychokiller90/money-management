@@ -17,6 +17,7 @@ import {
   getProduitsSuivis,
 } from '../sheets.js';
 import { tryHandleAdminText } from './admin.js';
+import { tryHandleNoteText, isAwaitingNote, captureNote } from './notes.js';
 import { buildSoldeReport } from './stats.js';
 import { buildEcheancesReport, buildQuantitesReport, periodToMonthArg } from './echeances.js';
 
@@ -1456,6 +1457,8 @@ export async function handleVoice(ctx) {
 
     // Affiche la transcription pour vérification, puis route comme un message texte
     await ctx.reply(`🎤 <i>« ${text} »</i>`, { parse_mode: 'HTML' });
+    // Une prise de note en attente capte le vocal avant l'assistant financier
+    if (isAwaitingNote(userId)) return captureNote(ctx, text);
     return handleChatQuery(ctx, text);
   } catch (err) {
     await ctx.telegram.deleteMessage(ctx.chat.id, processing.message_id).catch(() => {});
@@ -1470,8 +1473,10 @@ export async function handleText(ctx) {
   const userId = ctx.from.id;
   if (!isAuthorized(userId)) return;
 
-  // Les flows admin (/addenseigne, /renameenseigne) ont priorité
+  // Les flows admin (/addenseigne, /renameenseigne) et la prise de note
+  // ont priorité sur l'assistant financier
   if (await tryHandleAdminText(ctx)) return;
+  if (await tryHandleNoteText(ctx)) return;
 
   const active = getActiveSession(userId);
   // Aucun flow texte en cours → question libre à l'assistant financier

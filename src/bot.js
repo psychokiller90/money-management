@@ -51,6 +51,15 @@ import {
   handleAdminDelCatConfirm,
   handleAdminCancel,
 } from './handlers/admin.js';
+import {
+  handleNote,
+  handleNotes,
+  handleNoteEdit,
+  handleNoteEnCours,
+  handleNoteDelete,
+  handleNoteDeleteConfirm,
+  handleNoteCancel,
+} from './handlers/notes.js';
 import { checkAndRemind, checkEcheances } from './handlers/reminder.js';
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -102,6 +111,11 @@ bot.help((ctx) =>
       '• /quantites — quantités de produits achetées ce mois-ci (ex: boîtes de lait, couches)\n' +
       '• /quantites <code>YYYY-MM</code> — quantités d\'un mois précis\n' +
       '  <i>Tu peux aussi demander « combien de couches ce mois ? » en langage naturel</i>\n\n' +
+      '<b>🗒️ Notes & retours sur le bot</b>\n' +
+      '• /note <code>texte</code> — enregistre un bug ou une idée immédiatement\n' +
+      '• /note — puis écris ou envoie un 🎤 vocal (transcrit automatiquement)\n' +
+      '• /notes — consulter, modifier (✏️), marquer en cours (⏳) ou traitée (✅)\n' +
+      '  <i>Une note traitée est supprimée, après confirmation</i>\n\n' +
       '<b>🏷️ Gestion des listes</b>\n' +
       '• /categories — liste catégories et enseignes\n' +
       '• /addcategorie · /delcategorie · /renamecategorie\n' +
@@ -123,6 +137,10 @@ bot.command('stats', handleStats);
 bot.command('solde', handleSolde);
 bot.command('echeances', handleEcheances);
 bot.command('quantites', handleQuantites);
+
+// ── Notes / retours sur le bot ──────────────────────────────
+bot.command('note', handleNote);
+bot.command('notes', handleNotes);
 
 // ── Consultation par période ────────────────────────────────
 bot.command('jour', handleJour);
@@ -178,7 +196,40 @@ bot.action(/^admincatpick_(del|rename)_(.+)$/, handleAdminCatPick);
 bot.action(/^admindelcatconfirm$/, handleAdminDelCatConfirm);
 bot.action(/^admincancel$/, handleAdminCancel);
 
+// Notes callbacks
+bot.action(/^noteedit_(N\d+)$/, handleNoteEdit);
+bot.action(/^notecours_(N\d+)$/, handleNoteEnCours);
+bot.action(/^notedel_(N\d+)$/, handleNoteDelete);
+bot.action(/^notedelok_(N\d+)$/, handleNoteDeleteConfirm);
+bot.action(/^notecancel$/, handleNoteCancel);
+
 bot.on('text', handleText);
+
+// ── Menu « / » de Telegram ─────────────────────────────────
+// Volontairement limité au quotidien : les commandes d'administration
+// (/addenseigne, /renamecategorie…) restent tapables mais hors menu, sinon
+// la liste devient trop longue pour être utile. Détail complet dans /help.
+const MENU_COMMANDS = [
+  { command: 'note', description: '🗒️ Noter un retour / un bug' },
+  { command: 'notes', description: '🗒️ Consulter mes notes' },
+  { command: 'ajout', description: '✏️ Ajouter une dépense' },
+  { command: 'jour', description: "📋 Dépenses d'aujourd'hui" },
+  { command: 'semaine', description: '📋 7 derniers jours' },
+  { command: 'mois', description: '📋 Mois en cours' },
+  { command: 'solde', description: '💳 Solde restant du mois' },
+  { command: 'stats', description: '📊 Vue globale du mois' },
+  { command: 'quantites', description: '📦 Quantités achetées' },
+  { command: 'echeances', description: '💳 Paiements en plusieurs fois' },
+  { command: 'graph', description: '📊 Camembert mensuel' },
+  { command: 'help', description: '📖 Guide complet' },
+];
+
+function publierMenu() {
+  bot.telegram
+    .setMyCommands(MENU_COMMANDS)
+    .then(() => console.log(`✅ Menu Telegram publié (${MENU_COMMANDS.length} commandes)`))
+    .catch((err) => console.error('⚠️ setMyCommands échoué (bot toujours actif) :', err.message));
+}
 
 // ── Lancement ──────────────────────────────────────────────
 const isProd = process.env.NODE_ENV === 'production' && process.env.WEBHOOK_URL;
@@ -225,10 +276,12 @@ if (isProd) {
     bot.telegram.setWebhook(`${process.env.WEBHOOK_URL}${webhookPath}`)
       .then(() => console.log(`✅ Webhook Telegram enregistré → ${process.env.WEBHOOK_URL}${webhookPath}`))
       .catch((err) => console.error('⚠️ setWebhook échoué (bot toujours actif) :', err.message));
+    publierMenu();
   });
 } else {
   bot.launch();
   console.log('✅ Bot démarré en mode polling (dev)');
+  publierMenu();
 }
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
