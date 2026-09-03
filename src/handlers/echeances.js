@@ -126,17 +126,34 @@ const jourIso = (d) => d.toISOString().slice(0, 10);
  * pire que pas de chiffre.
  * @returns {number} 0 si non attribuable
  */
+/**
+ * Retrouve la dépense d'origine d'une ligne du journal Produits.
+ * L'enseigne peut avoir été renommée d'un côté seulement, donc on tente
+ * dans l'ordre : même enseigne, puis désignation contenant le produit, puis
+ * l'unique dépense du jour. On ne devine jamais entre deux candidats.
+ */
+function trouverDepense(ticket, nomProduit, expenses) {
+  const duJour = expenses.filter((e) => e.date && jourIso(e.date) === jourIso(ticket.date));
+  if (duJour.length === 0) return null;
+
+  const parEnseigne = duJour.filter(
+    (e) => normalizeStr(e.enseigne) === normalizeStr(ticket.enseigne)
+  );
+  if (parEnseigne.length === 1) return parEnseigne[0];
+
+  const cible = normalizeStr(nomProduit);
+  const parDesignation = duJour.filter((e) => normalizeStr(e.designation).includes(cible));
+  if (parDesignation.length === 1) return parDesignation[0];
+
+  return duJour.length === 1 ? duJour[0] : null;
+}
+
 function montantProduit(item, expenses) {
   const vues = new Set();
   let montant = 0;
   for (const t of item.tickets) {
     if (!t.seulProduitDuTicket) continue;
-    const dep = expenses.find(
-      (e) =>
-        e.date &&
-        jourIso(e.date) === jourIso(t.date) &&
-        normalizeStr(e.enseigne) === normalizeStr(t.enseigne)
-    );
+    const dep = trouverDepense(t, item.nom, expenses);
     if (!dep || vues.has(dep.rowIndex)) continue;
     vues.add(dep.rowIndex);
     montant += dep.montant;

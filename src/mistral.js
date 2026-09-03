@@ -60,6 +60,7 @@ Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :
   "produit": string|null,
   "period": {"kind":"month"|"week"|"day"|"all"|"range","year":number|null,"month":number|null,"start":"YYYY-MM-DD"|null,"end":"YYYY-MM-DD"|null}|null,
   "metric": "sum"|"count"|"list"|"max"|"min"|"average",
+  "limit": number|null,
   "expense": {"montant":number|null,"enseigne":string|null,"categorie":string|null,"date":"YYYY-MM-DD"|null,"produits":[{"nom":string,"quantite":number}]}|null
 }
 
@@ -73,14 +74,15 @@ Règles GÉNÉRALES :
 - Aucune période mentionnée → kind="all".
 - "categorie" = EXACTEMENT une catégorie valide, sinon null. Un commerçant (Leclerc, Burger King, Uber…) va dans "enseigne", JAMAIS dans "categorie".
 - metric : "sum" par défaut ; "count" pour "combien de fois" ; "list" pour "liste/montre/quelles" ; "max" pour "plus grosse/chère" ; "min" pour "plus petite" ; "average" pour "en moyenne".
+- "limit" : le nombre de dépenses demandé quand la question en réclame un nombre précis — "les 3 dernières dépenses" → 3, "ma dernière dépense"/"mon dernier achat" → 1, "mes 10 derniers achats" → 10. Mets null si aucun nombre n'est demandé. Une question avec "limit" prend aussi metric="list".
 
 DISTINCTION IMPORTANTE — interrogation vs déclaration :
 - type="query" si l'utilisateur INTERROGE ses dépenses ("combien j'ai dépensé", "quelle est ma plus grosse dépense", "montre mes achats").
 - type="ajout" si l'utilisateur DÉCLARE une dépense effectuée à enregistrer ("j'ai dépensé 12€ chez X", "ajoute 30€ de courses", "note un paiement de 5€ à la boulangerie", "15,50 chez Leclerc hier").
 - type="solde" si l'utilisateur demande son SOLDE RESTANT / ce qu'il lui reste à dépenser ce mois ("mon solde", "combien il me reste", "solde restant", "il me reste combien ce mois-ci").
 - type="echeances" si l'utilisateur interroge ses PAIEMENTS EN PLUSIEURS FOIS / échéances en cours ("mes échéances", "combien de fois il me reste à payer", "où j'en suis sur le canapé", "il me reste combien d'échéances", "mes paiements en 3 fois", "quand est ma prochaine échéance"). Si un achat précis est nommé, mets son nom dans "enseigne" ; sinon "enseigne"=null.
-- type="quantites" si l'utilisateur demande un NOMBRE D'ARTICLES et non une somme d'argent ("combien de couches ce mois", "combien de boîtes de lait", "combien de sérum physiologique j'ai acheté", "j'en ai acheté combien"). Indice décisif : la question porte sur une CHOSE consommable (couches, lait, dosettes…), pas sur des euros. Dans ce cas mets le produit concerné dans "produit" (une valeur de la liste des produits comptés si elle correspond, sinon le mot employé), et laisse "categorie" et "enseigne" à null.
-- ATTENTION : "combien de couches" = type="quantites" (on compte des couches), alors que "combien j'ai dépensé en couches" = type="query" (on compte des euros). Un mot comme "couches" ou "lait" désigne un PRODUIT, jamais une catégorie.
+- type="quantites" dès que la question porte sur un PRODUIT, que la formulation parle de nombre ("combien de couches ce mois", "combien de boîtes de lait") OU d'argent ("combien j'ai dépensé en couches le mois dernier", "ça m'a coûté combien de lait"). Le rapport renvoyé donne les deux — la quantité ET le montant — donc les deux formulations mènent au même endroit. Mets le produit dans "produit" (une valeur de la liste des produits comptés si elle correspond, sinon le mot employé), et laisse "categorie" et "enseigne" à null.
+- Un mot comme "couches", "lait" ou "sérum physiologique" désigne un PRODUIT, jamais une catégorie ni une enseigne. "Jumeaux" en revanche est une CATÉGORIE : "combien dépensé en Jumeaux" = type="query" avec categorie="Jumeaux".
 - type="advice" pour un conseil ("où économiser", "est-ce raisonnable", "comment réduire").
 - type="hors_sujet" si aucun rapport avec l'argent / le budget / les finances.
 
@@ -132,9 +134,20 @@ function buildCatBlock(refs) {
   return { catList, enseignesPerCat };
 }
 
+/** Date du jour + garde-fou sur l'année, commun aux deux prompts d'extraction. */
+function buildDateBlock() {
+  const today = new Date().toISOString().slice(0, 10);
+  return `Date du jour : ${today}.
+RÈGLE SUR LA DATE : un ticket est presque toujours récent (quelques jours, au pire quelques semaines).
+Si l'année lue est ambiguë ou mal imprimée, choisis celle qui reste cohérente avec la date du jour.
+Ne renvoie JAMAIS une date antérieure de plus d'un an à la date du jour, sauf si elle est écrite noir sur blanc et sans ambiguïté sur le document.`;
+}
+
 function buildUserPrompt(refs) {
   const { catList, enseignesPerCat } = buildCatBlock(refs);
   return `Analyse cette image de facture/ticket et extrais les informations de paiement.
+
+${buildDateBlock()}
 
 Catégories disponibles (choisis EXACTEMENT une de ces valeurs pour "categorie") :
 ${catList}
@@ -165,6 +178,8 @@ Retourne EXACTEMENT ce JSON :
 function buildMultiPrompt(refs) {
   const { catList, enseignesPerCat } = buildCatBlock(refs);
   return `Analyse ce document financier et extrais les dépenses.
+
+${buildDateBlock()}
 
 Catégories disponibles :
 ${catList}

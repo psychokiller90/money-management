@@ -70,11 +70,24 @@ function fmtDate(isoDate) {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Un ticket daté de plus de 11 mois — ou dans le futur — est presque toujours
+ * une erreur de lecture de l'année par l'IA (02.09.2026 lu « 2024 »).
+ * On le signale sur l'écran de confirmation plutôt que de le laisser passer.
+ */
+function dateSuspecte(isoDate) {
+  if (!isoDate) return false;
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return false;
+  const ecart = Date.now() - d.getTime();
+  return ecart > 334 * 86400 * 1000 || ecart < -2 * 86400 * 1000;
+}
+
 function formatRecap(data) {
   const lines = [
     '📋 <b>Dépense</b>\n',
     `🏷️ Catégorie : ${data.categorie ?? '—'}`,
-    `📅 Date      : ${fmtDate(data.date)}`,
+    `📅 Date      : ${fmtDate(data.date)}${dateSuspecte(data.date) ? '   ⚠️ <b>année à vérifier</b>' : ''}`,
     `🏪 Enseigne  : ${data.enseigne ?? '—'}`,
     `📝 Détail    : ${data.designation || '(aucun)'}`,
     `💶 Montant   : ${data.montant ?? '—'} €`,
@@ -1275,6 +1288,32 @@ function executeFinancialQuery(expenses, q, today) {
 
   const total = rows.reduce((s, e) => s + e.montant, 0);
   const metric = q.metric || 'sum';
+
+  // « les 3 dernières dépenses », « ma dernière dépense » : on ne montre que N
+  // lignes, et l'en-tête annonce N — pas le total de la période.
+  const limit = Number(q.limit) > 0 ? Math.min(Math.floor(Number(q.limit)), 50) : null;
+  if (limit) {
+    const sorted = [...rows].sort(
+      (a, b) => b.date.getTime() - a.date.getTime() || b.rowIndex - a.rowIndex
+    );
+    const shown = sorted.slice(0, limit);
+    const titre =
+      shown.length === 1
+        ? `Ta dernière dépense${whereSuffix}`
+        : `Tes ${shown.length} dernières dépenses${whereSuffix}`;
+    // Les désignations portent le détail produits et sont souvent très longues
+    const court = (s) => (s.length > 90 ? `${s.slice(0, 89)}…` : s);
+    const lines = shown.map(
+      (e) =>
+        `• ${fullDate(e.date)} — ${e.enseigne} — ${fmtAmountShort(e.montant)} <i>(${e.categorie})</i>` +
+        (e.designation ? `\n   <i>${court(e.designation)}</i>` : '')
+    );
+    const sousTotal =
+      shown.length > 1
+        ? `\n\n💶 Total de ces ${shown.length} : ${fmtAmountShort(shown.reduce((s, e) => s + e.montant, 0))}`
+        : '';
+    return `<b>${titre}</b> :\n${lines.join('\n')}${sousTotal}`;
+  }
 
   if (metric === 'count') {
     return `${rows.length} dépense${rows.length > 1 ? 's' : ''}${whereSuffix} — total ${fmtAmountShort(total)}.`;
